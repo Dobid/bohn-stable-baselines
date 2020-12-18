@@ -65,7 +65,7 @@ class SAC(OffPolicyRLModel):
                  gradient_steps=1, target_entropy='auto', action_noise=None,
                  random_exploration=0.0, verbose=0, write_freq=1, tensorboard_log=None,
                  _init_setup_model=True, policy_kwargs=None, full_tensorboard_log=False,
-                 seed=None, n_cpu_tf_sess=None):
+                 seed=None, n_cpu_tf_sess=None, time_aware=False):
 
         super(SAC, self).__init__(policy=policy, env=env, replay_buffer=None, verbose=verbose, write_freq=write_freq,
                                   policy_base=SACPolicy, requires_vec_env=False, policy_kwargs=policy_kwargs,
@@ -121,6 +121,8 @@ class SAC(OffPolicyRLModel):
         self.processed_obs_ph = None
         self.processed_next_obs_ph = None
         self.log_ent_coef = None
+
+        self.time_aware = time_aware
 
         if _init_setup_model:
             self.setup_model()
@@ -432,7 +434,18 @@ class SAC(OffPolicyRLModel):
                     obs_, new_obs_, reward_ = obs, new_obs, reward
 
                 # Store transition in the replay buffer.
-                self.replay_buffer.add(obs_, action, reward_, new_obs_, float(done))
+                extra_data = {}
+                if self.time_aware:
+                    bootstrap = True
+                    if done:
+                        info_time_limit = info.get("TimeLimit.truncated", None)
+                        bootstrap = info.get("termination", None) == "steps" or \
+                                    (info_time_limit is not None and info_time_limit)
+                    extra_data["bootstrap"] = bootstrap
+                extra_data.update({info.get("data", {})})
+
+                self.replay_buffer.add(obs_, action, reward_, new_obs_, float(done), **extra_data)
+
                 obs = new_obs
                 # Save the unnormalized observation
                 if self._vec_normalize_env is not None:
