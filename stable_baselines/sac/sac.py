@@ -13,6 +13,7 @@ from stable_baselines.common.buffers import ReplayBuffer
 from stable_baselines.sac.policies import SACPolicy
 from stable_baselines import logger
 
+import copy
 
 class SAC(OffPolicyRLModel):
     """
@@ -364,6 +365,13 @@ class SAC(OffPolicyRLModel):
         new_tb_log = self._init_num_timesteps(reset_num_timesteps)
         callback = self._init_callback(callback)
 
+        action_space = copy.deepcopy(self.action_space)
+        if self.n_envs > 1:
+            action_space.sample = lambda: np.array([self.action_space.sample() for _ in range(self.n_envs)])
+            action_space.low = np.repeat(action_space.low[np.newaxis, ...], self.n_envs, axis=0)
+            action_space.high = np.repeat(action_space.high[np.newaxis, ...], self.n_envs, axis=0)
+            action_space.shape = action_space.low.shape
+
         if replay_wrapper is not None:
             self.replay_buffer = replay_wrapper(self.replay_buffer)
 
@@ -377,23 +385,28 @@ class SAC(OffPolicyRLModel):
             # Initial learning rate
             current_lr = self.learning_rate(1)
 
+            initial_step = self.num_timesteps
+
             start_time = time.time()
-            episode_rewards = [0.0]
+            episode_rewards = [[0.0] for _ in range(self.n_envs)]
             episode_successes = []
             if self.action_noise is not None:
                 self.action_noise.reset()
             obs = self.env.reset()
+            if self.n_envs == 1:
+                obs = [obs]
             # Retrieve unnormalized observation for saving into the buffer
             if self._vec_normalize_env is not None:
                 obs_ = self._vec_normalize_env.get_original_obs().squeeze()
 
             n_updates = 0
-            infos_values = []
+            infos_values = [[] for _ in range(self.n_envs)]
+            done = [[False] for _ in range(self.n_envs)]
 
             callback.on_training_start(locals(), globals())
             callback.on_rollout_start()
 
-            for step in range(total_timesteps):
+            for step in range(initial_step, total_timesteps, self.n_envs):
                 # Before training starts, randomly sample actions
                 # from a uniform distribution for better exploration.
                 # Afterwards, use the learned policy
@@ -401,24 +414,29 @@ class SAC(OffPolicyRLModel):
                 if self.num_timesteps < self.learning_starts or np.random.rand() < self.random_exploration:
                     # actions sampled from action space are from range specific to the environment
                     # but algorithm operates on tanh-squashed actions therefore simple scaling is used
-                    unscaled_action = self.env.action_space.sample()
-                    action = scale_action(self.action_space, unscaled_action)
+                    unscaled_action = action_space.sample()
+                    action = scale_action(action_space, unscaled_action)
                 else:
+                    if self.n_envs == 1:
+                        obs = obs[0]
                     action = self.policy_tf.step(obs[None], deterministic=False).flatten()
                     # Add noise to the action (improve exploration,
                     # not needed in general)
                     if self.action_noise is not None:
                         action = np.clip(action + self.action_noise(), -1, 1)
                     # inferred actions need to be transformed to environment action_space before stepping
-                    unscaled_action = unscale_action(self.action_space, action)
+                    unscaled_action = unscale_action(action_space, action)
 
-                assert action.shape == self.env.action_space.shape
+                assert action.shape == action_space.shape
 
-                self.sess.run([self.policy_tf.qf1, self.policy_tf.qf2], feed_dict={self.observations_ph: np.expand_dims(obs, axis=0),
-                                         self.actions_ph: np.expand_dims(action, axis=0)})
                 new_obs, reward, done, info = self.env.step(unscaled_action)
+                if self.n_envs == 1:
+                    new_obs = [new_obs]
+                    reward = [reward]
+                    done = [done]
+                    info = [info]
 
-                self.num_timesteps += 1
+                self.num_timesteps += self.n_envs
 
                 # Only stop training if return value is False, not when it is None. This is for backwards
                 # compatibility with callbacks that have no return statement.
@@ -434,17 +452,21 @@ class SAC(OffPolicyRLModel):
                     obs_, new_obs_, reward_ = obs, new_obs, reward
 
                 # Store transition in the replay buffer.
-                extra_data = {}
+                extra_data = [{} for _ in range(self.n_envs)]
                 if self.time_aware:
-                    bootstrap = True
-                    if done:
-                        info_time_limit = info.get("TimeLimit.truncated", None)
-                        bootstrap = info.get("termination", None) == "steps" or \
-                                    (info_time_limit is not None and info_time_limit)
-                    extra_data["bootstrap"] = bootstrap
-                extra_data.update({info.get("data", {})})
+                    for env_i in range(self.n_envs):
+                        bootstrap = True
+                        if done[env_i]:
+                            info_time_limit = info[env_i].get("TimeLimit.truncated", None)
+                            bootstrap = info[env_i].get("termination", None) == "steps" or \
+                                        (info_time_limit is not None and info_time_limit)
+                        extra_data[env_i]["bootstrap"] = bootstrap
 
-                self.replay_buffer.add(obs_, action, reward_, new_obs_, float(done), **extra_data)
+                if self.n_envs > 1:
+                    for env_i in range(self.n_envs):
+                        extra_data[env_i].update(info[env_i].get("data", {}))
+                        self.replay_buffer.add(obs_[env_i], action[env_i], reward_[env_i], new_obs_[env_i],
+                                               float(done[env_i]), **extra_data[env_i])
 
                 obs = new_obs
                 # Save the unnormalized observation
@@ -452,18 +474,19 @@ class SAC(OffPolicyRLModel):
                     obs_ = new_obs_
 
                 # Retrieve reward and episode length if using Monitor wrapper
-                maybe_ep_info = info.get('episode')
-                if maybe_ep_info is not None:
-                    self.ep_info_buf.extend([maybe_ep_info])
+                for env_i in range(self.n_envs):
+                    maybe_ep_info = info[env_i].get('episode')
+                    if maybe_ep_info is not None:
+                        self.ep_info_buf.extend([maybe_ep_info])
 
                 if writer is not None:
                     # Write reward per episode to tensorboard
-                    ep_reward = np.array([reward_]).reshape((1, -1))
-                    ep_done = np.array([done]).reshape((1, -1))
+                    ep_reward = np.array([reward_]).reshape((self.n_envs, -1))
+                    ep_done = np.array([done]).reshape((self.n_envs, -1))
                     tf_util.total_episode_reward_logger(self.episode_reward, ep_reward,
                                                         ep_done, writer, self.num_timesteps)
 
-                if self.num_timesteps % self.train_freq == 0:
+                if (self.num_timesteps // self.n_envs) % self.train_freq == 0:
                     callback.on_rollout_end()
 
                     mb_infos_vals = []
@@ -491,27 +514,38 @@ class SAC(OffPolicyRLModel):
 
                     callback.on_rollout_start()
 
-                episode_rewards[-1] += reward_
-                if done:
-                    if self.action_noise is not None:
-                        self.action_noise.reset()
-                    if not isinstance(self.env, VecEnv):
-                        obs = self.env.reset()
-                    episode_rewards.append(0.0)
+                for env_i in range(self.n_envs):
+                    episode_rewards[env_i][-1] += reward[env_i]
+                    if done[env_i]:
+                        if self.action_noise is not None:
+                            if self.n_envs > 1:
+                                self.action_noise.reset(env_i)
+                            else:
+                                self.action_noise.reset()
+                        if not isinstance(self.env, VecEnv):
+                            obs = self.env.reset()
+                            obs = [obs]
+                        episode_rewards[env_i].append(0.0)
 
-                    maybe_is_success = info.get('is_success')
-                    if maybe_is_success is not None:
-                        episode_successes.append(float(maybe_is_success))
+                        maybe_is_success = info[env_i].get('is_success')
+                        if maybe_is_success is not None:
+                            episode_successes.append(float(maybe_is_success))
 
                 if len(episode_rewards[-101:-1]) == 0:
                     mean_reward = -np.inf
                 else:
                     mean_reward = round(float(np.mean(episode_rewards[-101:-1])), 1)
 
-                num_episodes = len(episode_rewards)
+                num_episodes = sum([len(ep_rews) for ep_rews in episode_rewards])
                 # Display training infos
-                if self.verbose >= 1 and done and log_interval is not None and len(episode_rewards) % log_interval == 0:
-                    fps = int(step / (time.time() - start_time))
+                if self.verbose >= 1 and done[0] and log_interval is not None and len(episode_rewards[0]) % log_interval == 0:
+                    if len(episode_rewards[0][-101:-1]) == 0:
+                        mean_reward = -np.inf
+                    else:
+                        mean_reward = round(float(np.mean([np.mean(ep_r[-101:-1]) for ep_r in episode_rewards])), 1)
+
+                    fps = int(step * self.n_envs / (time.time() - start_time))
+
                     logger.logkv("episodes", num_episodes)
                     logger.logkv("mean 100 episode reward", mean_reward)
                     if len(self.ep_info_buf) > 0 and len(self.ep_info_buf[0]) > 0:
