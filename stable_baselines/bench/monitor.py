@@ -53,6 +53,7 @@ class Monitor(gym.Wrapper):
         self.info_keywords = info_keywords
         self.allow_early_resets = allow_early_resets
         self.rewards = None
+        self.infos = None
         self.needs_reset = True
         self.episode_rewards = []
         self.episode_lengths = []
@@ -71,6 +72,7 @@ class Monitor(gym.Wrapper):
             raise RuntimeError("Tried to reset an environment before done. If you want to allow early resets, "
                                "wrap your env with Monitor(env, path, allow_early_resets=True)")
         self.rewards = []
+        self.infos = []
         self.needs_reset = False
         for key in self.reset_keywords:
             value = kwargs.get(key)
@@ -90,13 +92,17 @@ class Monitor(gym.Wrapper):
             raise RuntimeError("Tried to step environment that needs reset")
         observation, reward, done, info = self.env.step(action)
         self.rewards.append(reward)
+        self.infos.append(info)
         if done:
             self.needs_reset = True
             ep_rew = sum(self.rewards)
             eplen = len(self.rewards)
             ep_info = {"r": round(ep_rew, 6), "l": eplen, "t": round(time.time() - self.t_start, 6)}
             for key in self.info_keywords:
-                ep_info[key] = info[key]
+                ep_info[key] = []
+                for info in self.infos:
+                    ep_info[key].append(info[key])
+                ep_info[key] = np.nanmean(ep_info[key])
             self.episode_rewards.append(ep_rew)
             self.episode_lengths.append(eplen)
             self.episode_times.append(time.time() - self.t_start)
