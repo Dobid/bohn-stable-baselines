@@ -194,6 +194,8 @@ class FeedForwardPolicy(SACPolicy):
         self.reuse = reuse
         if layers is None:
             layers = [64, 64]
+        if isinstance(layers, list):
+            layers = {"qf": layers, "pi": layers}
         self.layers = layers
         self.reg_loss = None
         self.reg_weight = reg_weight
@@ -217,7 +219,7 @@ class FeedForwardPolicy(SACPolicy):
             else:
                 pi_h = tf.layers.flatten(obs)
 
-            pi_h = mlp(pi_h, self.layers, self.activ_fn, layer_norm=self.layer_norm)
+            pi_h = mlp(pi_h, self.layers["pi"], self.activ_fn, layer_norm=self.layer_norm)
 
             self.act_mu = mu_ = tf.layers.dense(pi_h, self.ac_space.shape[0], activation=None)
             # Important difference with SAC and other algo such as PPO:
@@ -265,7 +267,7 @@ class FeedForwardPolicy(SACPolicy):
             if create_vf:
                 # Value function
                 with tf.variable_scope('vf', reuse=reuse):
-                    vf_h = mlp(critics_h, self.layers, self.activ_fn, layer_norm=self.layer_norm)
+                    vf_h = mlp(critics_h, self.layers["qf"], self.activ_fn, layer_norm=self.layer_norm)
                     value_fn = tf.layers.dense(vf_h, 1, name="vf")
                 self.value_fn = value_fn
 
@@ -275,11 +277,11 @@ class FeedForwardPolicy(SACPolicy):
 
                 # Double Q values to reduce overestimation
                 with tf.variable_scope('qf1', reuse=reuse):
-                    qf1_h = mlp(qf_h, self.layers, self.activ_fn, layer_norm=self.layer_norm)
+                    qf1_h = mlp(qf_h, self.layers["qf"], self.activ_fn, layer_norm=self.layer_norm)
                     qf1 = tf.layers.dense(qf1_h, 1, name="qf1")
 
                 with tf.variable_scope('qf2', reuse=reuse):
-                    qf2_h = mlp(qf_h, self.layers, self.activ_fn, layer_norm=self.layer_norm)
+                    qf2_h = mlp(qf_h, self.layers["qf"], self.activ_fn, layer_norm=self.layer_norm)
                     qf2 = tf.layers.dense(qf2_h, 1, name="qf2")
 
                 self.qf1 = qf1
@@ -294,6 +296,51 @@ class FeedForwardPolicy(SACPolicy):
 
     def proba_step(self, obs, state=None, mask=None):
         return self.sess.run([self.act_mu, self.std], {self.obs_ph: obs})
+
+
+class AHMPCPolicy(FeedForwardPolicy):
+    """
+    Policy object that implements a DDPG-like actor critic, using a feed forward neural network.
+
+    :param sess: (TensorFlow session) The current TensorFlow session
+    :param ob_space: (Gym Space) The observation space of the environment
+    :param ac_space: (Gym Space) The action space of the environment
+    :param n_env: (int) The number of environments to run
+    :param n_steps: (int) The number of steps to run for each environment
+    :param n_batch: (int) The number of batch to run (n_envs * n_steps)
+    :param reuse: (bool) If the policy is reusable or not
+    :param layers: ([int]) The size of the Neural network for the policy (if None, default to [64, 64])
+    :param cnn_extractor: (function (TensorFlow Tensor, ``**kwargs``): (TensorFlow Tensor)) the CNN feature extraction
+    :param feature_extraction: (str) The feature extraction type ("cnn" or "mlp")
+    :param layer_norm: (bool) enable layer normalisation
+    :param reg_weight: (float) Regularization loss weight for the policy parameters
+    :param act_fun: (tf.func) the activation function to use in the neural network.
+    :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
+    """
+
+    def __init__(self, sess, ob_space, ac_space, mpc_state_dim, mpc_gamma=1, n_env=1, n_steps=1, n_batch=None, reuse=False, layers=None,
+                 cnn_extractor=nature_cnn, feature_extraction="mlp", reg_weight=0.0,
+                 layer_norm=False, act_fun=tf.nn.relu, obs_module_indices=None, **kwargs):
+        super(AHMPCPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=reuse, layers=layers,
+                                          cnn_extractor=cnn_extractor, feature_extraction=feature_extraction,
+                                          reg_weight=reg_weight, layer_norm=layer_norm, act_fun=act_fun,
+                                          obs_module_indices=obs_module_indices, **kwargs)
+        if "mpc" not in layers:
+            self.layers["mpc"] = self.layers["qf"]
+        self.mpc_value_fn = None
+        self.mpc_gamma = mpc_gamma
+        self.mpc_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim), name="mpc_state_ph", dtype=tf.float32)
+        self.mpc_next_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim), name="mpc_next_state_ph", dtype=tf.float32)
+
+    def make_mpc_value_fn(self, state, reuse=False, scope="mpc_value_fns"):
+        with tf.variable_scope(scope, reuse=reuse):
+            mpc_value_fn = tf.layers.flatten(state)
+            mpc_value_fn = mlp(mpc_value_fn, self.layers["mpc"], self.activ_fn, layer_norm=self.layer_norm)
+            mpc_value_fn = tf.layers.dense(mpc_value_fn, 1, name="mpc_value_fn", activation=tf.nn.relu)
+            if not reuse:
+                self.mpc_value_fn = mpc_value_fn
+
+        return mpc_value_fn
 
 
 class CnnPolicy(FeedForwardPolicy):
