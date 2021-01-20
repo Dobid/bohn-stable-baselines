@@ -318,7 +318,7 @@ class AHMPCPolicy(FeedForwardPolicy):
     :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
 
-    def __init__(self, sess, ob_space, ac_space, mpc_state_dim, mpc_gamma=1, n_env=1, n_steps=1, n_batch=None, reuse=False, layers=None,
+    def __init__(self, sess, ob_space, ac_space, mpc_state_dim, mpc_gamma=1, n_env=1, n_steps=1, use_mpc_vf_target=False, n_batch=None, reuse=False, layers=None,
                  cnn_extractor=nature_cnn, feature_extraction="mlp", reg_weight=0.0,
                  layer_norm=False, act_fun=tf.nn.relu, obs_module_indices=None, **kwargs):
         super(AHMPCPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=reuse, layers=layers,
@@ -328,6 +328,7 @@ class AHMPCPolicy(FeedForwardPolicy):
         if "mpc" not in layers:
             self.layers["mpc"] = self.layers["qf"]
         self.mpc_value_fn = None
+        self.use_mpc_vf_target = use_mpc_vf_target
         self.mpc_gamma = mpc_gamma
         self.mpc_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim), name="mpc_state_ph", dtype=tf.float32)
         self.mpc_next_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim), name="mpc_next_state_ph", dtype=tf.float32)

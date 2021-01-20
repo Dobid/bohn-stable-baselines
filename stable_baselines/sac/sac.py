@@ -193,7 +193,8 @@ class SAC(OffPolicyRLModel):
 
                     if issubclass(self.policy, AHMPCPolicy):
                         self.mpc_value_fn = self.policy_tf.make_mpc_value_fn(self.mpc_state_ph)
-                        self.mpc_value_fn_term_state = self.policy_tf.make_mpc_value_fn(self.next_mpc_state_ph, reuse=True)
+                        if not self.policy_tf.use_mpc_vf_target:
+                            self.mpc_value_fn_term_state = self.policy_tf.make_mpc_value_fn(self.next_mpc_state_ph, reuse=True)
 
                     # Target entropy is used when learning the entropy coefficient
                     if self.target_entropy == 'auto':
@@ -229,8 +230,8 @@ class SAC(OffPolicyRLModel):
                                                                          create_qf=False, create_vf=True)
                     self.value_target = value_target
 
-                    #if issubclass(self.policy, AHMPCPolicy):
-                    #    self.mpc_vfn_target = self.target_policy.make_mpc_value_fn(self.next_mpc_state_ph)
+                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_vf_target:
+                        self.mpc_value_fn_term_state = self.target_policy.make_mpc_value_fn(self.next_mpc_state_ph)
 
                 with tf.variable_scope("loss", reuse=False):
                     # Take the min of the two Q-Values (Double-Q Learning)
@@ -248,7 +249,7 @@ class SAC(OffPolicyRLModel):
                     qf2_loss = 0.5 * tf.reduce_mean((q_backup - qf2) ** 2)
 
                     if issubclass(self.policy, AHMPCPolicy):
-                        mpc_value_fn_backup = tf.stop_gradient(self.mpc_rewards_ph + self.policy_tf.mpc_gamma ** self.mpc_n_horizon_ph * self.mpc_value_fn_term_state) # TODO: ensure output is actually horizon and not scaled
+                        mpc_value_fn_backup = tf.stop_gradient(self.mpc_rewards_ph + self.policy_tf.mpc_gamma ** self.mpc_n_horizon_ph * self.mpc_value_fn_term_state)
                         mpc_value_fn_loss = 0.5 * tf.reduce_mean((mpc_value_fn_backup - self.mpc_value_fn) ** 2)
                         self.mpc_value_fn_backup = mpc_value_fn_backup
 
@@ -293,6 +294,9 @@ class SAC(OffPolicyRLModel):
 
                     source_params = tf_util.get_trainable_vars("model/values_fn/vf")
                     target_params = tf_util.get_trainable_vars("target/values_fn/vf")
+                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_vf_target:
+                        source_params += tf_util.get_trainable_vars("model/mpc_value_fns")
+                        target_params += tf_util.get_trainable_vars("target/mpc_value_fns")
 
 
                     # Polyak averaging for target variables
@@ -342,7 +346,7 @@ class SAC(OffPolicyRLModel):
 
                 # Retrieve parameters that must be saved
                 self.params = tf_util.get_trainable_vars("model")
-                self.target_params = tf_util.get_trainable_vars("target/values_fn/vf")
+                self.target_params = target_params
 
                 # Initialize Variables and target network
                 with self.sess.as_default():
