@@ -172,8 +172,9 @@ class SAC(OffPolicyRLModel):
                                                     "mpc_next_state": self.next_mpc_state_ph,
                                                      "mpc_n_horizon": self.mpc_n_horizon_ph})
 
-                replay_buffer_kw = {"extra_data_names": tuple(self.train_extra_phs.keys())}
-                self.replay_buffer = self.buffer_type(self.buffer_size, **replay_buffer_kw)
+                if self.replay_buffer is None:
+                    replay_buffer_kw = {"extra_data_names": tuple(self.train_extra_phs.keys())}
+                    self.replay_buffer = self.buffer_type(self.buffer_size, **replay_buffer_kw)
 
                 with tf.variable_scope("model", reuse=False):
                     # Create the policy
