@@ -166,11 +166,13 @@ class SAC(OffPolicyRLModel):
                     if issubclass(self.policy, AHMPCPolicy):
                         self.mpc_state_ph = self.policy_tf.mpc_state_ph
                         self.next_mpc_state_ph = self.policy_tf.mpc_next_state_ph
+                        self.mpc_parameter_ph = self.policy_tf.mpc_parameter_ph
                         self.mpc_rewards_ph = tf.placeholder(tf.float32, shape=(None, 1), name="mpc_rewards")
                         self.mpc_n_horizon_ph = tf.placeholder(tf.float32, shape=(None, 1), name="mpc_n_horizon")
                         self.train_extra_phs.update({"mpc_rewards": self.mpc_rewards_ph, "mpc_state": self.mpc_state_ph,
                                                     "mpc_next_state": self.next_mpc_state_ph,
-                                                     "mpc_n_horizon": self.mpc_n_horizon_ph})
+                                                     "mpc_n_horizon": self.mpc_n_horizon_ph,
+                                                     "mpc_parameter": self.mpc_parameter_ph})
 
                 if self.replay_buffer is None:
                     replay_buffer_kw = {"extra_data_names": tuple(self.train_extra_phs.keys())}
@@ -193,9 +195,9 @@ class SAC(OffPolicyRLModel):
                                                                     reuse=True)
 
                     if issubclass(self.policy, AHMPCPolicy):
-                        self.mpc_value_fn = self.policy_tf.make_mpc_value_fn(self.mpc_state_ph)
+                        self.mpc_value_fn = self.policy_tf.make_mpc_value_fn(self.mpc_state_ph, self.mpc_parameter_ph)
                         if not self.policy_tf.use_mpc_vf_target:
-                            self.mpc_value_fn_term_state = self.policy_tf.make_mpc_value_fn(self.next_mpc_state_ph, reuse=True)
+                            self.mpc_value_fn_term_state = self.policy_tf.make_mpc_value_fn(self.next_mpc_state_ph, self.mpc_parameter_ph, reuse=True)
 
                     # Target entropy is used when learning the entropy coefficient
                     if self.target_entropy == 'auto':
@@ -232,7 +234,7 @@ class SAC(OffPolicyRLModel):
                     self.value_target = value_target
 
                     if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_vf_target:
-                        self.mpc_value_fn_term_state = self.target_policy.make_mpc_value_fn(self.next_mpc_state_ph)
+                        self.mpc_value_fn_term_state = self.target_policy.make_mpc_value_fn(self.next_mpc_state_ph, self.mpc_parameter_ph)
 
                 with tf.variable_scope("loss", reuse=False):
                     # Take the min of the two Q-Values (Double-Q Learning)

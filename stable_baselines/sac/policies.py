@@ -298,7 +298,7 @@ class FeedForwardPolicy(SACPolicy):
         return self.sess.run([self.act_mu, self.std], {self.obs_ph: obs})
 
 
-class AHMPCPolicy(FeedForwardPolicy):
+class AHMPCPolicy(FeedForwardPolicy):  # TODO: consider if next state should have separate parameter
     """
     Policy object that implements a DDPG-like actor critic, using a feed forward neural network.
 
@@ -318,7 +318,7 @@ class AHMPCPolicy(FeedForwardPolicy):
     :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
 
-    def __init__(self, sess, ob_space, ac_space, mpc_state_dim, mpc_gamma=1, n_env=1, n_steps=1, use_mpc_vf_target=False, n_batch=None, reuse=False, layers=None,
+    def __init__(self, sess, ob_space, ac_space, mpc_state_dim, mpc_parameter_dim, mpc_gamma=1, n_env=1, n_steps=1, use_mpc_vf_target=False, n_batch=None, reuse=False, layers=None,
                  cnn_extractor=nature_cnn, feature_extraction="mlp", reg_weight=0.0,
                  layer_norm=False, act_fun=tf.nn.relu, obs_module_indices=None, **kwargs):
         super(AHMPCPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=reuse, layers=layers,
@@ -331,13 +331,14 @@ class AHMPCPolicy(FeedForwardPolicy):
         self.use_mpc_vf_target = use_mpc_vf_target
         self.mpc_gamma = mpc_gamma
         self.mpc_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim), name="mpc_state_ph", dtype=tf.float32)
+        self.mpc_parameter_ph = tf.placeholder(shape=(n_batch, mpc_parameter_dim), name="mpc_parameter_ph", dtype=tf.float32)
         self.mpc_next_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim), name="mpc_next_state_ph", dtype=tf.float32)
 
-    def make_mpc_value_fn(self, state, reuse=False, scope="mpc_value_fns"):
+    def make_mpc_value_fn(self, state, parameter, reuse=False, scope="mpc_value_fns"):
         with tf.variable_scope(scope, reuse=reuse):
-            mpc_value_fn = tf.layers.flatten(state)
+            mpc_value_fn = tf.concat([tf.layers.flatten(state), tf.layers.flatten(parameter)], axis=-1)
             mpc_value_fn = mlp(mpc_value_fn, self.layers["mpc"], self.activ_fn, layer_norm=self.layer_norm)
-            mpc_value_fn = tf.layers.dense(mpc_value_fn, 1, name="mpc_value_fn", activation=tf.nn.relu)
+            mpc_value_fn = tf.layers.dense(mpc_value_fn, 1, name="mpc_value_fn")
             if not reuse:
                 self.mpc_value_fn = mpc_value_fn
 
