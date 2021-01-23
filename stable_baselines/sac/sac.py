@@ -163,7 +163,7 @@ class SAC(OffPolicyRLModel):
                                                      name='actions')
                     self.learning_rate_ph = tf.placeholder(tf.float32, [], name="learning_rate_ph")
 
-                    if issubclass(self.policy, AHMPCPolicy):
+                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_value_fn:
                         self.mpc_state_ph = self.policy_tf.mpc_state_ph
                         self.next_mpc_state_ph = self.policy_tf.mpc_next_state_ph
                         self.mpc_parameter_ph = self.policy_tf.mpc_parameter_ph
@@ -194,7 +194,7 @@ class SAC(OffPolicyRLModel):
                                                                     policy_out, create_qf=True, create_vf=False,
                                                                     reuse=True)
 
-                    if issubclass(self.policy, AHMPCPolicy):
+                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_value_fn:
                         self.mpc_value_fn = self.policy_tf.make_mpc_value_fn(self.mpc_state_ph, self.mpc_parameter_ph)
                         if not self.policy_tf.use_mpc_vf_target:
                             self.mpc_value_fn_term_state = self.policy_tf.make_mpc_value_fn(self.next_mpc_state_ph, self.mpc_parameter_ph, reuse=True)
@@ -251,7 +251,7 @@ class SAC(OffPolicyRLModel):
                     qf1_loss = 0.5 * tf.reduce_mean((q_backup - qf1) ** 2)
                     qf2_loss = 0.5 * tf.reduce_mean((q_backup - qf2) ** 2)
 
-                    if issubclass(self.policy, AHMPCPolicy):
+                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_value_fn:
                         mpc_value_fn_backup = tf.stop_gradient(self.mpc_rewards_ph + self.policy_tf.mpc_gamma ** self.mpc_n_horizon_ph * self.mpc_value_fn_term_state)
                         mpc_value_fn_loss = 0.5 * tf.reduce_mean((mpc_value_fn_backup - self.mpc_value_fn) ** 2)
                         self.mpc_value_fn_backup = mpc_value_fn_backup
@@ -282,7 +282,7 @@ class SAC(OffPolicyRLModel):
                     value_loss = 0.5 * tf.reduce_mean((value_fn - v_backup) ** 2)
 
                     values_losses = qf1_loss + qf2_loss + value_loss
-                    if issubclass(self.policy, AHMPCPolicy):
+                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_value_fn:
                         mpc_value_fn_optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate_ph)
                         mpc_value_fn_train_op = mpc_value_fn_optimizer.minimize(mpc_value_fn_loss, var_list=tf_util.get_trainable_vars("model/mpc_value_fns"))
 
@@ -323,7 +323,7 @@ class SAC(OffPolicyRLModel):
                         self.step_ops = [policy_loss, qf1_loss, qf2_loss,
                                          value_loss, qf1, qf2, value_fn, logp_pi,
                                          self.entropy, policy_train_op, train_values_op]
-                        if issubclass(self.policy, AHMPCPolicy):
+                        if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_value_fn:
                             self.step_ops.append(mpc_value_fn_train_op)
 
                         # Add entropy coefficient optimization operation if needed
@@ -342,7 +342,7 @@ class SAC(OffPolicyRLModel):
                     if ent_coef_loss is not None:
                         tf.summary.scalar('ent_coef_loss', ent_coef_loss)
                         tf.summary.scalar('ent_coef', self.ent_coef)
-                    if issubclass(self.policy, AHMPCPolicy):
+                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_value_fn:
                         tf.summary.scalar("mpc_value_fn_loss", mpc_value_fn_loss)
 
                     tf.summary.scalar('learning_rate', tf.reduce_mean(self.learning_rate_ph))
