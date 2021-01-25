@@ -62,7 +62,7 @@ class SAC(OffPolicyRLModel):
 
     def __init__(self, policy, env, gamma=0.99, learning_rate=3e-4, buffer_size=50000, buffer_type=ReplayBuffer,
                  learning_starts=100, train_freq=1, batch_size=64,
-                 tau=0.005, ent_coef='auto', target_update_interval=1, action_l2_scale=0,
+                 tau=0.005, reward_scale=1, ent_coef='auto', target_update_interval=1, action_l2_scale=0,
                  gradient_steps=1, target_entropy='auto', action_noise=None,
                  random_exploration=0.0, verbose=0, write_freq=1, tensorboard_log=None,
                  _init_setup_model=True, policy_kwargs=None, full_tensorboard_log=False,
@@ -91,6 +91,7 @@ class SAC(OffPolicyRLModel):
         self.gamma = gamma
         self.action_noise = action_noise
         self.random_exploration = random_exploration
+        self.reward_scale = reward_scale
 
         self.value_fn = None
         self.graph = None
@@ -483,6 +484,8 @@ class SAC(OffPolicyRLModel):
                     done = [done]
                     info = [info]
                     action = [action]
+
+                reward = [r / self.reward_scale for r in reward]
 
                 self.num_timesteps += self.n_envs
 
