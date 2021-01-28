@@ -110,12 +110,22 @@ class ReplayBuffer(object):
             return env.normalize_reward(reward)
         return reward
 
-    def _encode_sample(self, idxes: Union[List[int], np.ndarray], env: Optional[VecNormalize] = None):
+    def _encode_sample(self, idxes: Union[List[int], np.ndarray], env: Optional[VecNormalize] = None, n_step=1, gamma=1):
         obses_t, actions, rewards, obses_tp1, dones = [], [], [], [], []
+        if n_step > 1:
+            n_steps = []
         extra_data = {name: [] for name in self._extra_data_names}
         for i in idxes:
             data = self._storage[i]
             obs_t, action, reward, obs_tp1, done, *extra_timestep_data = data
+            if n_step > 1:
+                n_steps.append(n_step)
+                for n_idx in range(i + 1, i + n_step):
+                    if n_idx >= len(self._storage) or self._storage[n_idx][4]:
+                        n_steps[-1] = n_idx - i - 1
+                        break
+                    reward += self._storage[n_idx][2] * gamma ** (n_idx - i)
+                    obs_tp1 = self._storage[n_idx][3]
             obses_t.append(np.array(obs_t, copy=False))
             actions.append(np.array(action, copy=False))
             rewards.append(reward)
@@ -130,6 +140,8 @@ class ReplayBuffer(object):
                     extra_data[extra_data_name].append(np.array(data, copy=False))
 
         extra_data = {k: np.array(v) for k, v in extra_data.items()}
+        if n_step > 1:
+            extra_data["n_step"] = np.array(n_steps)
         if "bootstrap" in self._extra_data_names:
             dones = 1 - extra_data.pop("bootstrap").astype(np.float32)
 
@@ -153,7 +165,7 @@ class ReplayBuffer(object):
                 and 0 otherwise.
         """
         idxes = [random.randint(0, len(self._storage) - 1) for _ in range(batch_size)]
-        return self._encode_sample(idxes, env=env)
+        return self._encode_sample(idxes, env=env, n_step=_kwargs.get("n_step", 1), gamma=_kwargs.get("gamma", 1))
 
 
 # TODO: scan/"burn in"
