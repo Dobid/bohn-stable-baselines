@@ -488,6 +488,8 @@ class SAC(OffPolicyRLModel):
                     else:
                         step_obs = obs
                     action = self.policy_tf.step(step_obs[None], deterministic=False)
+                    if vectorize_objects:
+                        action = action.flatten()
                     # Add noise to the action (improve exploration,
                     # not needed in general)
                     if self.action_noise is not None:
