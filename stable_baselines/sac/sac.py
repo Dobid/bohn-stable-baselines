@@ -430,7 +430,8 @@ class SAC(OffPolicyRLModel):
         callback = self._init_callback(callback)
 
         action_space = copy.deepcopy(self.action_space)
-        if self.n_envs > 1:
+        vectorize_objects = self.n_envs == 1 and not issubclass(type(self.env), VecEnv)
+        if not vectorize_objects:
             action_space.sample = lambda: np.array([self.action_space.sample() for _ in range(self.n_envs)])
             action_space.low = np.repeat(action_space.low[np.newaxis, ...], self.n_envs, axis=0)
             action_space.high = np.repeat(action_space.high[np.newaxis, ...], self.n_envs, axis=0)
@@ -457,7 +458,7 @@ class SAC(OffPolicyRLModel):
             if self.action_noise is not None:
                 self.action_noise.reset()
             obs = self.env.reset()
-            if self.n_envs == 1:
+            if vectorize_objects:
                 obs = [obs]
             # Retrieve unnormalized observation for saving into the buffer
             if self._vec_normalize_env is not None:
@@ -479,13 +480,14 @@ class SAC(OffPolicyRLModel):
                     # actions sampled from action space are from range specific to the environment
                     # but algorithm operates on tanh-squashed actions therefore simple scaling is used
                     unscaled_action = action_space.sample()
+                    #unscaled_action = np.array([[1]])
                     action = scale_action(action_space, unscaled_action)
                 else:
                     if self.n_envs == 1:
                         step_obs = obs[0]
                     else:
                         step_obs = obs
-                    action = self.policy_tf.step(step_obs[None], deterministic=False).flatten()
+                    action = self.policy_tf.step(step_obs[None], deterministic=False)
                     # Add noise to the action (improve exploration,
                     # not needed in general)
                     if self.action_noise is not None:
@@ -496,7 +498,7 @@ class SAC(OffPolicyRLModel):
                 assert action.shape == action_space.shape
 
                 new_obs, reward, done, info = self.env.step(unscaled_action)
-                if self.n_envs == 1:
+                if vectorize_objects:
                     new_obs = [new_obs]
                     reward = [reward]
                     done = [done]
@@ -516,9 +518,8 @@ class SAC(OffPolicyRLModel):
                 if self._vec_normalize_env is not None:
                     new_obs_ = self._vec_normalize_env.get_original_obs().squeeze()
                     reward_ = self._vec_normalize_env.get_original_reward().squeeze()
-                else:
-                    # Avoid changing the original ones
-                    obs_, new_obs_, reward_ = obs, new_obs, reward
+
+                obs_, new_obs_, reward_ = obs, new_obs, reward
 
                 # Store transition in the replay buffer.
                 extra_data = [{} for _ in range(self.n_envs)]
@@ -595,8 +596,8 @@ class SAC(OffPolicyRLModel):
                                 self.action_noise.reset(env_i)
                             else:
                                 self.action_noise.reset()
-                        if not isinstance(self.env, VecEnv):
-                            obs = self.env.reset()
+                        obs = self.env.reset()
+                        if vectorize_objects:
                             obs = [obs]
                         episode_rewards[env_i].append(0.0)
 
