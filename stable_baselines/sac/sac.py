@@ -364,6 +364,8 @@ class SAC(OffPolicyRLModel):
                 with self.sess.as_default():
                     self.sess.run(tf.global_variables_initializer())
                     self.sess.run(target_init_op)
+                    if self.policy_tf.mpc_value_fn_path is not None:
+                        self.load_parameters(self.policy_tf.mpc_value_fn_path)  # TODO: ensure only loading mpc value fn params
 
                 self.summary = tf.summary.merge_all()
 
