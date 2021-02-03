@@ -571,6 +571,10 @@ class BaseRLModel(ABC):
 
         self.sess.run(param_update_ops, feed_dict=feed_dict)
 
+    def load_parameters_by_name(self, load_path, param_names):
+        _, params = BaseRLModel._load_from_file(load_path, load_data=False)
+        self.load_parameters({p_name: params[p_name] for p_name in param_names}, exact_match=False)
+
     @abstractmethod
     def save(self, save_path, cloudpickle=False):
         """
