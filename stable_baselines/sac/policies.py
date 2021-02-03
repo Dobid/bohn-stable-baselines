@@ -337,6 +337,7 @@ class AHMPCPolicy(FeedForwardPolicy):  # TODO: consider if next state should hav
             self.mpc_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim), name="mpc_state_ph", dtype=tf.float32)
             self.mpc_parameter_ph = tf.placeholder(shape=(n_batch, mpc_parameter_dim), name="mpc_parameter_ph", dtype=tf.float32)
             self.mpc_next_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim), name="mpc_next_state_ph", dtype=tf.float32)
+            self.mpc_vf_w_b = None
 
     def make_mpc_value_fn(self, state, parameter, reuse=False, scope="mpc_value_fns"):
         with tf.variable_scope(scope, reuse=reuse):
@@ -346,7 +347,15 @@ class AHMPCPolicy(FeedForwardPolicy):  # TODO: consider if next state should hav
             if not reuse:
                 self.mpc_value_fn = mpc_value_fn
 
+        self.mpc_vf_w_b = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="model/{}".format(scope))
+
         return mpc_value_fn
+
+    def get_mpc_vfn_weights_and_biases(self):
+        wbs = self.sess.run(self.mpc_vf_w_b)
+        w_inds = [i for i, v in enumerate(self.mpc_vf_w_b) if "kernel" in v.name]
+        b_inds = [i for i, v in enumerate(self.mpc_vf_w_b) if "bias" in v.name]
+        return [wbs[i] for i in w_inds], [wbs[i] for i in b_inds]
 
 
 class CnnPolicy(FeedForwardPolicy):
