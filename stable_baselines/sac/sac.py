@@ -376,12 +376,12 @@ class SAC(OffPolicyRLModel):
         if len(batch_extra) > 0:
             batch_extra = batch_extra[0]
         if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_value_fn:
-            batch_mpc = self.mpc_replay_buffer.sample(self.batch_size, n_step=16, gamma=self.policy_tf.mpc_gamma)
+            batch_mpc = self.mpc_replay_buffer.sample(self.batch_size, n_step=32, gamma=self.policy_tf.mpc_gamma)
             batch_extra["mpc_state"] = batch_mpc[0]
             batch_extra["mpc_rewards"] = batch_mpc[2]
             batch_extra["mpc_next_state"] = batch_mpc[3]
             batch_extra["mpc_parameter"] = batch_mpc[5]["mpc_parameter"]
-            batch_extra["mpc_n_step"] = batch_mpc[5]["n_step"]
+            batch_extra["mpc_n_step"] = batch_mpc[5].get("n_step", np.ones((256, 1)))
             batch_extra["mpc_terminals"] = batch_mpc[4]
 
         feed_dict = {
