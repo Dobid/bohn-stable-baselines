@@ -318,7 +318,7 @@ class AHMPCPolicy(FeedForwardPolicy):  # TODO: consider if next state should hav
     :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
 
-    def __init__(self, sess, ob_space, ac_space, use_mpc_value_fn=True, mpc_state_dim=None, mpc_parameter_dim=None, mpc_gamma=1, n_env=1, n_steps=1, use_mpc_vf_target=False, mpc_value_fn_path=None, n_batch=None, reuse=False, layers=None,
+    def __init__(self, sess, ob_space, ac_space, use_mpc_value_fn=True, mpc_state_dim=None, mpc_parameter_dim=None, train_mpc_value_fn=True, mpc_gamma=1, n_env=1, n_steps=1, use_mpc_vf_target=False, mpc_value_fn_path=None, n_batch=None, reuse=False, layers=None,
                  cnn_extractor=nature_cnn, feature_extraction="mlp", reg_weight=0.0,
                  layer_norm=False, act_fun=tf.nn.relu, obs_module_indices=None, **kwargs):
         super(AHMPCPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=reuse, layers=layers,
@@ -331,6 +331,7 @@ class AHMPCPolicy(FeedForwardPolicy):  # TODO: consider if next state should hav
         self.mpc_value_fn = None
         self.use_mpc_vf_target = use_mpc_vf_target and use_mpc_value_fn
         self.use_mpc_value_fn = use_mpc_value_fn
+        self.train_mpc_value_fn = use_mpc_value_fn and train_mpc_value_fn
         self.mpc_gamma = mpc_gamma
         self.mpc_value_fn_path = mpc_value_fn_path
         if self.use_mpc_value_fn:

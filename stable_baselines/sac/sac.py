@@ -168,20 +168,21 @@ class SAC(OffPolicyRLModel):
                         self.mpc_state_ph = self.policy_tf.mpc_state_ph
                         self.next_mpc_state_ph = self.policy_tf.mpc_next_state_ph
                         self.mpc_parameter_ph = self.policy_tf.mpc_parameter_ph  # TODO: consider if should have mpc parameter tp1 (not for CA or PEND)
-                        self.mpc_rewards_ph = tf.placeholder(tf.float32, shape=(None, 1), name="mpc_rewards")
-                        self.mpc_n_step_ph = tf.placeholder(tf.float32, shape=(None, 1), name="mpc_n_step")
-                        self.mpc_terminals_ph = tf.placeholder(tf.float32, shape=(None, 1), name='mpc_terminals')
-                        self.train_extra_phs.update({"mpc_rewards": self.mpc_rewards_ph, "mpc_state": self.mpc_state_ph,
-                                                    "mpc_next_state": self.next_mpc_state_ph,
-                                                     "mpc_n_step": self.mpc_n_step_ph,
-                                                     "mpc_parameter": self.mpc_parameter_ph,
-                                                     "mpc_terminals": self.mpc_terminals_ph})
+                        if self.policy_tf.train_mpc_value_fn:
+                            self.mpc_rewards_ph = tf.placeholder(tf.float32, shape=(None, 1), name="mpc_rewards")
+                            self.mpc_n_step_ph = tf.placeholder(tf.float32, shape=(None, 1), name="mpc_n_step")
+                            self.mpc_terminals_ph = tf.placeholder(tf.float32, shape=(None, 1), name='mpc_terminals')
+                            self.train_extra_phs.update({"mpc_rewards": self.mpc_rewards_ph, "mpc_state": self.mpc_state_ph,
+                                                        "mpc_next_state": self.next_mpc_state_ph,
+                                                         "mpc_n_step": self.mpc_n_step_ph,
+                                                         "mpc_parameter": self.mpc_parameter_ph,
+                                                         "mpc_terminals": self.mpc_terminals_ph})
 
                 replay_buffer_kw = {"extra_data_names": []}
                 if self.time_aware:
                     replay_buffer_kw["extra_data_names"].append("bootstrap")
                 if self.replay_buffer is None:
-                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_value_fn:
+                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.train_mpc_value_fn:
                         self.mpc_replay_buffer = self.buffer_type(self.buffer_size, extra_data_names=replay_buffer_kw["extra_data_names"] + ["mpc_parameter"])
                     else:
                         replay_buffer_kw["extra_data_names"].extend(self.train_extra_phs.keys())
@@ -260,7 +261,7 @@ class SAC(OffPolicyRLModel):
                     qf1_loss = 0.5 * tf.reduce_mean((q_backup - qf1) ** 2)
                     qf2_loss = 0.5 * tf.reduce_mean((q_backup - qf2) ** 2)
 
-                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_value_fn:
+                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.train_mpc_value_fn:
                         mpc_value_fn_backup = tf.stop_gradient(self.mpc_rewards_ph + (1 - self.mpc_terminals_ph) * self.mpc_value_fn_term_state * self.policy_tf.mpc_gamma ** self.mpc_n_step_ph)
                         self.mpc_value_fn_loss = mpc_value_fn_loss = 0.5 * tf.reduce_mean((mpc_value_fn_backup - self.mpc_value_fn) ** 2)
                         self.mpc_value_fn_backup = mpc_value_fn_backup
@@ -291,7 +292,7 @@ class SAC(OffPolicyRLModel):
                     value_loss = 0.5 * tf.reduce_mean((value_fn - v_backup) ** 2)
 
                     values_losses = qf1_loss + qf2_loss + value_loss
-                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_value_fn:
+                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.train_mpc_value_fn:
                         mpc_value_fn_optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate_ph)
                         self.mpc_value_fn_train_op = mpc_value_fn_train_op = mpc_value_fn_optimizer.minimize(mpc_value_fn_loss, var_list=tf_util.get_trainable_vars("model/mpc_value_fns"))
 
@@ -332,7 +333,7 @@ class SAC(OffPolicyRLModel):
                         self.step_ops = [policy_loss, qf1_loss, qf2_loss,
                                          value_loss, qf1, qf2, value_fn, logp_pi,
                                          self.entropy, policy_train_op, train_values_op]
-                        if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_value_fn:
+                        if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.train_mpc_value_fn and self.policy_tf.mpc_value_fn_path is None:
                             self.step_ops.append(mpc_value_fn_train_op)
 
                         # Add entropy coefficient optimization operation if needed
@@ -351,7 +352,7 @@ class SAC(OffPolicyRLModel):
                     if ent_coef_loss is not None:
                         tf.summary.scalar('ent_coef_loss', ent_coef_loss)
                         tf.summary.scalar('ent_coef', self.ent_coef)
-                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_value_fn:
+                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.train_mpc_value_fn and self.policy_tf.mpc_value_fn_path is None:
                         tf.summary.scalar("mpc_value_fn_loss", mpc_value_fn_loss)
 
                     tf.summary.scalar('learning_rate', tf.reduce_mean(self.learning_rate_ph))
@@ -375,7 +376,7 @@ class SAC(OffPolicyRLModel):
         batch_obs, batch_actions, batch_rewards, batch_next_obs, batch_dones, *batch_extra = batch
         if len(batch_extra) > 0:
             batch_extra = batch_extra[0]
-        if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_value_fn:
+        if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.train_mpc_value_fn:
             batch_mpc = self.mpc_replay_buffer.sample(self.batch_size, n_step=32, gamma=self.policy_tf.mpc_gamma)
             batch_extra["mpc_state"] = batch_mpc[0]
             batch_extra["mpc_rewards"] = batch_mpc[2]
@@ -537,7 +538,7 @@ class SAC(OffPolicyRLModel):
 
                 for env_i in range(self.n_envs):
                     #extra_data[env_i].update(info[env_i].get("data", {}))
-                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_value_fn:
+                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.train_mpc_value_fn:
                         mpc_extra_data = copy.deepcopy(extra_data[env_i])
                         mpc_extra_data["mpc_parameter"] = info[env_i]["data"]["mpc_parameter"]
                         self.mpc_replay_buffer.add(info[env_i]["data"]["mpc_state"], np.array([0]), info[env_i]["data"]["mpc_rewards"], info[env_i]["data"]["mpc_next_state"], float(done[env_i]), **mpc_extra_data)
