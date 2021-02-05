@@ -425,7 +425,7 @@ class SAC(OffPolicyRLModel):
         return policy_loss, qf1_loss, qf2_loss, value_loss, entropy
 
     def learn(self, total_timesteps, callback=None,
-              log_interval=4, tb_log_name="SAC", reset_num_timesteps=True, replay_wrapper=None):
+              log_interval=4, tb_log_name="SAC", reset_num_timesteps=True, replay_wrapper=None, random_sampler=None):
 
         new_tb_log = self._init_num_timesteps(reset_num_timesteps)
         callback = self._init_callback(callback)
@@ -480,7 +480,10 @@ class SAC(OffPolicyRLModel):
                 if self.num_timesteps < self.learning_starts or np.random.rand() < self.random_exploration:
                     # actions sampled from action space are from range specific to the environment
                     # but algorithm operates on tanh-squashed actions therefore simple scaling is used
-                    unscaled_action = action_space.sample()
+                    if random_sampler is None:
+                        unscaled_action = action_space.sample()
+                    else:
+                        unscaled_action = random_sampler(obs)
                     #unscaled_action = np.array([[1]])
                     action = scale_action(action_space, unscaled_action)
                 else:
