@@ -318,7 +318,7 @@ class AHMPCPolicy(FeedForwardPolicy):  # TODO: consider if next state should hav
     :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
 
-    def __init__(self, sess, ob_space, ac_space, use_mpc_value_fn=True, mpc_state_dim=None, mpc_parameter_dim=None, train_mpc_value_fn=True, mpc_gamma=1, n_env=1, n_steps=1, use_mpc_vf_target=False, mpc_value_fn_path=None, n_batch=None, reuse=False, layers=None,
+    def __init__(self, sess, ob_space, ac_space, use_mpc_value_fn=True, mpc_state_dim=None, mpc_parameter_dim=None, train_mpc_value_fn=True, mpc_gamma=1, n_env=1, n_steps=1, use_mpc_vf_target=False, mpc_value_fn_path=None, mpc_vf_type="nn", n_batch=None, reuse=False, layers=None,
                  cnn_extractor=nature_cnn, feature_extraction="mlp", reg_weight=0.0,
                  layer_norm=False, act_fun=tf.nn.relu, obs_module_indices=None, **kwargs):
         super(AHMPCPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=reuse, layers=layers,
@@ -326,12 +326,14 @@ class AHMPCPolicy(FeedForwardPolicy):  # TODO: consider if next state should hav
                                           reg_weight=reg_weight, layer_norm=layer_norm, act_fun=act_fun,
                                           obs_module_indices=obs_module_indices, **kwargs)
         assert use_mpc_value_fn is False or (mpc_state_dim is not None and mpc_parameter_dim is not None)
+        assert mpc_vf_type in ["nn", "sos", "poly"]
         if "mpc" not in layers:
             self.layers["mpc"] = self.layers["qf"]
         self.mpc_value_fn = None
         self.use_mpc_vf_target = use_mpc_vf_target and use_mpc_value_fn
         self.use_mpc_value_fn = use_mpc_value_fn
         self.train_mpc_value_fn = use_mpc_value_fn and train_mpc_value_fn
+        self.mpc_vf_type = mpc_vf_type
         self.mpc_gamma = mpc_gamma
         self.mpc_value_fn_path = mpc_value_fn_path
         if self.use_mpc_value_fn:
@@ -342,8 +344,21 @@ class AHMPCPolicy(FeedForwardPolicy):  # TODO: consider if next state should hav
 
     def make_mpc_value_fn(self, state, parameter, reuse=False, scope="mpc_value_fns"):
         with tf.variable_scope(scope, reuse=reuse):
-            mpc_value_fn = tf.concat([tf.layers.flatten(state), tf.layers.flatten(parameter)], axis=-1)
-            mpc_value_fn = mlp(mpc_value_fn, self.layers["mpc"], self.activ_fn, layer_norm=self.layer_norm)
+            if self.mpc_vf_type == "nn":
+                mpc_value_fn = tf.concat([tf.layers.flatten(state), tf.layers.flatten(parameter)], axis=-1)
+                mpc_value_fn = mlp(mpc_value_fn, self.layers["mpc"], self.activ_fn, layer_norm=self.layer_norm)
+            elif self.mpc_vf_type == "sos":
+                #if self.mpc_parameter_ph.shape[1] == 2:
+                #    parameter = tf.subtract(parameter, state[:, 1:], name="goal_distance")
+                mpc_value_fn = tf.concat([tf.layers.flatten(state), tf.layers.flatten(parameter)], axis=-1)
+                mpc_value_fn = tf.math.square(mpc_value_fn)
+            elif self.mpc_vf_type == "poly":
+                #if self.mpc_parameter_ph.shape[1] == 2:
+                #    parameter = tf.subtract(parameter, state[:, 1:], name="goal_distance")
+                mpc_value_fn = tf.concat([tf.layers.flatten(state), tf.layers.flatten(parameter)], axis=-1)
+                mpc_value_fn = tf.concat([mpc_value_fn, tf.math.square(mpc_value_fn)], axis=-1)
+            else:
+                raise NotImplementedError
             mpc_value_fn = tf.layers.dense(mpc_value_fn, 1, name="mpc_value_fn")
             if not reuse:
                 self.mpc_value_fn = mpc_value_fn
