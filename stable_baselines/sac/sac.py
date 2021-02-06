@@ -515,6 +515,8 @@ class SAC(OffPolicyRLModel):
 
                 self.num_timesteps += self.n_envs
 
+                self.info = info
+
                 # Only stop training if return value is False, not when it is None. This is for backwards
                 # compatibility with callbacks that have no return statement.
                 if callback.on_step() is False:
