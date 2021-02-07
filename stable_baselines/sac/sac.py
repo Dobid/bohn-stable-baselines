@@ -349,6 +349,7 @@ class SAC(OffPolicyRLModel):
                     tf.summary.scalar('qf2_loss', qf2_loss)
                     tf.summary.scalar('value_loss', value_loss)
                     tf.summary.scalar('entropy', self.entropy)
+                    tf.summary.scalar("std", tf.reduce_mean(self.policy_tf.std))
                     if ent_coef_loss is not None:
                         tf.summary.scalar('ent_coef_loss', ent_coef_loss)
                         tf.summary.scalar('ent_coef', self.ent_coef)
