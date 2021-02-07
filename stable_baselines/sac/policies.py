@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 from gym.spaces import Box
-from stable_baselines.common.tf_layers import mlp
+from stable_baselines.common.tf_layers import mlp, ortho_init
 from stable_baselines.common.policies import BasePolicy, nature_cnn, register_policy, cnn_1d_extractor
 
 EPS = 1e-6  # Avoid NaN (prevents division by zero or log of zero)
@@ -221,7 +221,7 @@ class FeedForwardPolicy(SACPolicy):
 
             pi_h = mlp(pi_h, self.layers["pi"], self.activ_fn, layer_norm=self.layer_norm)
 
-            self.act_mu = mu_ = tf.layers.dense(pi_h, self.ac_space.shape[0], activation=None)
+            self.act_mu = mu_ = tf.layers.dense(pi_h, self.ac_space.shape[0], activation=None, kernel_initializer=ortho_init(0.01))
             # Important difference with SAC and other algo such as PPO:
             # the std depends on the state, so we cannot use stable_baselines.common.distribution
             log_std = tf.layers.dense(pi_h, self.ac_space.shape[0], activation=None)
