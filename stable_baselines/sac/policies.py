@@ -337,25 +337,24 @@ class AHMPCPolicy(FeedForwardPolicy):  # TODO: consider if next state should hav
         self.mpc_gamma = mpc_gamma
         self.mpc_value_fn_path = mpc_value_fn_path
         if self.use_mpc_value_fn:
-            self.mpc_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim), name="mpc_state_ph", dtype=tf.float32)
-            self.mpc_parameter_ph = tf.placeholder(shape=(n_batch, mpc_parameter_dim), name="mpc_parameter_ph", dtype=tf.float32)
-            self.mpc_next_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim), name="mpc_next_state_ph", dtype=tf.float32)
+            self.mpc_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim + mpc_parameter_dim), name="mpc_state_ph", dtype=tf.float32)
+            self.mpc_next_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim + mpc_parameter_dim), name="mpc_next_state_ph", dtype=tf.float32)
             self.mpc_vf_w_b = None
 
-    def make_mpc_value_fn(self, state, parameter, reuse=False, scope="mpc_value_fns"):
+    def make_mpc_value_fn(self, state, reuse=False, scope="mpc_value_fns"):
         with tf.variable_scope(scope, reuse=reuse):
             if self.mpc_vf_type == "nn":
-                mpc_value_fn = tf.concat([tf.layers.flatten(state), tf.layers.flatten(parameter)], axis=-1)
+                mpc_value_fn = tf.layers.flatten(state)
                 mpc_value_fn = mlp(mpc_value_fn, self.layers["mpc"], self.activ_fn, layer_norm=self.layer_norm)
             elif self.mpc_vf_type == "sos":
                 #if self.mpc_parameter_ph.shape[1] == 2:
                 #    parameter = tf.subtract(parameter, state[:, 1:], name="goal_distance")
-                mpc_value_fn = tf.concat([tf.layers.flatten(state), tf.layers.flatten(parameter)], axis=-1)
+                mpc_value_fn = tf.layers.flatten(state)
                 mpc_value_fn = tf.math.square(mpc_value_fn)
             elif self.mpc_vf_type == "poly":
                 #if self.mpc_parameter_ph.shape[1] == 2:
                 #    parameter = tf.subtract(parameter, state[:, 1:], name="goal_distance")
-                mpc_value_fn = tf.concat([tf.layers.flatten(state), tf.layers.flatten(parameter)], axis=-1)
+                mpc_value_fn = tf.layers.flatten(state)
                 mpc_value_fn = tf.concat([mpc_value_fn, tf.math.square(mpc_value_fn)], axis=-1)
             else:
                 raise NotImplementedError
