@@ -52,7 +52,7 @@ class PPO2(ActorCriticRLModel):
     """
     def __init__(self, policy, env, gamma=0.99, n_steps=128, ent_coef=0.01, learning_rate=2.5e-4, vf_coef=0.5,
                  max_grad_norm=0.5, lam=0.95, nminibatches=4, noptepochs=4, cliprange=0.2, cliprange_vf=None,
-                 verbose=0, tensorboard_log=None, _init_setup_model=True, policy_kwargs=None,
+                 verbose=0, tensorboard_log=None, _init_setup_model=True, policy_kwargs=None, time_aware=False,
                  full_tensorboard_log=False, seed=None, n_cpu_tf_sess=None):
 
         self.learning_rate = learning_rate
@@ -68,7 +68,8 @@ class PPO2(ActorCriticRLModel):
         self.noptepochs = noptepochs
         self.tensorboard_log = tensorboard_log
         self.full_tensorboard_log = full_tensorboard_log
-
+        
+        self.time_aware = time_aware
         self.action_ph = None
         self.advs_ph = None
         self.rewards_ph = None
@@ -100,7 +101,7 @@ class PPO2(ActorCriticRLModel):
 
     def _make_runner(self):
         return Runner(env=self.env, model=self, n_steps=self.n_steps,
-                      gamma=self.gamma, lam=self.lam)
+                      gamma=self.gamma, lam=self.lam, time_aware=self.time_aware)
 
     def _get_pretrain_placeholders(self, get_vf=False):
         policy = self.act_model
@@ -462,7 +463,7 @@ class PPO2(ActorCriticRLModel):
 
 
 class Runner(AbstractEnvRunner):
-    def __init__(self, *, env, model, n_steps, gamma, lam):
+    def __init__(self, *, env, model, n_steps, gamma, lam, time_aware=False):
         """
         A runner to learn the policy of an environment for a model
 
@@ -475,6 +476,7 @@ class Runner(AbstractEnvRunner):
         super().__init__(env=env, model=model, n_steps=n_steps)
         self.lam = lam
         self.gamma = gamma
+        self.time_aware = time_aware
 
     def _run(self):
         """
@@ -540,12 +542,16 @@ class Runner(AbstractEnvRunner):
         last_gae_lam = 0
         for step in reversed(range(self.n_steps)):
             if step == self.n_steps - 1:
-                nextnonterminal = 1.0 - self.dones
-                #nextnonterminal = 1.0 - env_terms
+                if self.time_aware:
+                    nextnonterminal = 1.0 - env_terms
+                else:
+                    nextnonterminal = 1.0 - self.dones
                 nextvalues = last_values
             else:
-                nextnonterminal = 1.0 - mb_dones[step + 1]
-                #nextnonterminal = 1.0 - mb_envterms[step + 1]
+                if self.time_aware:
+                    nextnonterminal = 1.0 - mb_envterms[step + 1]
+                else:
+                    nextnonterminal = 1.0 - mb_dones[step + 1]
                 nextvalues = mb_values[step + 1]
             delta = mb_rewards[step] + self.gamma * nextvalues * nextnonterminal - mb_values[step]
             mb_advs[step] = last_gae_lam = delta + self.gamma * self.lam * nextnonterminal * last_gae_lam
