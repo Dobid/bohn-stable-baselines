@@ -17,7 +17,7 @@ class DummyVecEnv(VecEnv):
         (each callable returns a `Gym.Env` instance when called).
     """
 
-    def __init__(self, env_fns):
+    def __init__(self, env_fns, reset_on_done=True):
         self.envs = [fn() for fn in env_fns]
         env = self.envs[0]
         VecEnv.__init__(self, len(env_fns), env.observation_space, env.action_space)
@@ -31,6 +31,7 @@ class DummyVecEnv(VecEnv):
         self.buf_rews = np.zeros((self.num_envs,), dtype=np.float32)
         self.buf_infos = [{} for _ in range(self.num_envs)]
         self.actions = None
+        self.reset_on_done = reset_on_done
         self.metadata = env.metadata
 
     def step_async(self, actions):
@@ -43,8 +44,8 @@ class DummyVecEnv(VecEnv):
             if self.buf_dones[env_idx]:
                 # save final observation where user can get it, then reset
                 self.buf_infos[env_idx]['terminal_observation'] = obs
-                #if getattr(self.envs[env_idx], "automatic_reset", False):
-                #    obs = self.envs[env_idx].reset()
+                if self.reset_on_done:
+                    obs = self.envs[env_idx].reset()
             self._save_obs(env_idx, obs)
         return (self._obs_from_buf(), np.copy(self.buf_rews), np.copy(self.buf_dones),
                 self.buf_infos.copy())
