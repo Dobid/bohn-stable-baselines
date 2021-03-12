@@ -614,7 +614,7 @@ class FeedForwardPolicy(ActorCriticPolicy):
     """
 
     def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, layers=None, net_arch=None,
-                 act_fun=tf.tanh, cnn_extractor=nature_cnn, feature_extraction="cnn", dual_critic=False, **kwargs):
+                 act_fun=tf.tanh, cnn_extractor=nature_cnn, feature_extraction="cnn", dual_critic=False, measure_execution_time=False, **kwargs):
         box_dist_type = kwargs.pop("box_dist_type", "guassian")
         super(FeedForwardPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=reuse,
                                                 scale=(feature_extraction == "cnn"), box_dist_type=box_dist_type)
@@ -630,10 +630,12 @@ class FeedForwardPolicy(ActorCriticPolicy):
 
         if net_arch is None:
             if layers is None:
-                layers = [64, 64]
-            net_arch = [dict(vf=layers, pi=layers)]
+                layers = {"pi": [64, 64], "vf": [128, 128]}
+            net_arch = [layers]
 
         self.dual_critic = dual_critic
+        self.measure_execution_time = measure_execution_time
+        self.last_execution_time = None
 
         with tf.variable_scope("model", reuse=reuse):
             if feature_extraction == "cnn":
@@ -660,12 +662,16 @@ class FeedForwardPolicy(ActorCriticPolicy):
         self._setup_init()
 
     def step(self, obs, state=None, mask=None, deterministic=False):
+        if self.measure_execution_time:
+            start_time = time.process_time()
         if deterministic:
             action, value, neglogp = self.sess.run([self.deterministic_action, self.value_flat, self.neglogp],
                                                    {self.obs_ph: obs})
         else:
             action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp],
                                                    {self.obs_ph: obs})
+        if self.measure_execution_time:
+            self.last_execution_time = time.process_time() - start_time
         return action, value, self.initial_state, neglogp
 
     def proba_step(self, obs, state=None, mask=None):
