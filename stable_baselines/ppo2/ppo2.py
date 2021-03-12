@@ -11,6 +11,7 @@ from stable_baselines.common.policies import ActorCriticPolicy, RecurrentActorCr
 from stable_baselines.common.schedules import get_schedule_fn
 from stable_baselines.common.tf_util import total_episode_reward_logger
 from stable_baselines.common.math_util import safe_mean
+from collections import deque
 
 class PPO2(ActorCriticRLModel):
     """
