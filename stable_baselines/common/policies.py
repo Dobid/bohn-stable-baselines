@@ -314,6 +314,8 @@ class ActorCriticPolicy(BasePolicy):
             elif isinstance(self.proba_distribution, MultiCategoricalProbabilityDistribution):
                 self._policy_proba = [tf.nn.softmax(categorical.flatparam())
                                      for categorical in self.proba_distribution.categoricals]
+            elif isinstance(self.proba_distribution, MixProbabilityDistribution):
+                self._policy_proba = [tf.nn.sigmoid(self.policy[:, 0]), self.proba_distribution.gaussian_0.mean, self.proba_distribution.gaussian_0.std, self.proba_distribution.gaussian_1.mean, self.proba_distribution.gaussian_1.std]
             else:
                 self._policy_proba = []  # it will return nothing, as it is not implemented
             if self.dual_critic:
@@ -688,6 +690,219 @@ class FeedForwardPolicy(ActorCriticPolicy):
         return self.sess.run(self._critic_discrepancy, {self.obs_ph: obs})
 
 
+class LQRPolicy(ActorCriticPolicy):
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, A, B, Q, R, obs_module_indices=None, std=1, reuse=False, layers=None, net_arch=None,
+                 act_fun=tf.tanh, cnn_extractor=nature_cnn, feature_extraction="mlp", measure_execution_time=False, **kwargs):
+        from stable_baselines.lqr.policy import LQR
+        #dist_type = kwargs.pop("dist_type", "guassian")
+        super(LQRPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=reuse,
+                                                scale=(feature_extraction == "cnn"))#, dist_type=dist_type)
+
+        #self._kwargs_check(feature_extraction, kwargs)
+        self.lqr = LQR(A, B, Q, R)
+
+        if layers is not None:
+            warnings.warn("Usage of the `layers` parameter is deprecated! Use net_arch instead "
+                          "(it has a different semantics though).", DeprecationWarning)
+            if net_arch is not None:
+                warnings.warn("The new `net_arch` parameter overrides the deprecated `layers` parameter!",
+                              DeprecationWarning)
+
+        if net_arch is None:
+            if layers is None:
+                layers = {"vf": [128, 128]}
+            assert "pi" not in layers
+            net_arch = [layers]
+
+        self.measure_execution_time = measure_execution_time
+        self.last_execution_time = None
+
+        with tf.variable_scope("model", reuse=reuse):
+            K_num = tf.constant(self.lqr.K_num.astype(np.float32))
+            K_grad = tf.constant(self.lqr._grad_K().astype(np.float32))
+            weights_num = tf.constant(self.lqr.get_weights().astype(np.float32).reshape(1, -1))
+            #self.lqr_K = tf.get_variable(initializer=K_num, trainable=False, name="LQR_K", use_resource=True)
+            #self.lqr_K_grad = tf.get_variable(initializer=K_grad, trainable=False, name="LQR_K_grad", use_resource=True)
+            #self.weights = tf.get_variable(initializer=weights_num, trainable=True, name="LQR_weights", use_resource=True)
+
+            if obs_module_indices is not None:
+                self.obs_module_indices = obs_module_indices
+
+                vf_mask = np.array([m == "et" for m in obs_module_indices])
+                lqr_mask = np.array([m == "lqr" for m in obs_module_indices])
+                vf_obs = tf.boolean_mask(self.processed_obs, vf_mask, name="et_obs", axis=1)
+                vf_obs.set_shape([None, sum(vf_mask)])
+                lqr_obs = tf.boolean_mask(self.processed_obs, lqr_mask, name="lqr_obs", axis=1)
+                lqr_obs.set_shape([None, sum(lqr_mask)])
+
+            if feature_extraction == "cnn":
+                vf_latent = cnn_extractor(vf_obs, **kwargs)
+            else:
+                if feature_extraction == "cnn_mlp":
+                    latents = cnn_mlp_extractor(vf_obs, net_arch, act_fun, **kwargs)
+                else:
+                    latents = mlp_extractor(tf.layers.flatten(vf_obs), net_arch, act_fun, **kwargs)
+
+                vf_latent = latents[1]
+        with tf.variable_scope("model", reuse=tf.AUTO_REUSE, use_resource=True):
+            @tf.custom_gradient
+            def lqr_action(x):
+                lqr_K = tf.get_variable(initializer=K_num, trainable=False, name="LQR_K", use_resource=True)
+                weights = tf.get_variable(initializer=weights_num, trainable=True, name="LQR_weights", use_resource=True)
+                u_lqr = -tf.matmul(x, tf.transpose(lqr_K))
+                u_lqr += tf.reduce_sum(weights) * 0.0
+                def grad(dy, variables=None):
+                    lqr_K_grad = tf.get_variable(initializer=K_grad, trainable=False, name="LQR_K_grad", use_resource=True)
+                    #dy = tf.Print(dy, [tf.reduce_mean(dy)], "dy: ")
+                    return None, [tf.matmul(tf.transpose(dy), tf.matmul(x, -lqr_K_grad))]
+                    #return (dy * x, [tf.reduce_mean(dy * -tf.matmul(x, lqr_K_grad), axis=0, keepdims=True)])
+                return u_lqr, grad
+
+            self.lqr_output = lqr_action(lqr_obs)
+            self.weights = tf.get_variable("LQR_weights")
+
+        with tf.variable_scope("model", reuse=reuse):
+            self._value_fn = linear(vf_latent, 'vf', 1)
+
+            self._proba_distribution, self._policy = self.pdtype.proba_distribution_from_output(self.lqr_output, std=std)
+            self.q_value = self.pdtype.value_from_latent(vf_latent, init_scale=0.01, init_bias=0.0)
+
+        #with tf.variable_scope("model", reuse=True, use_resource=True):
+        #    grad = tf.gradients(self.policy, self.weights)
+        #    grad2 = tf.gradients(self.policy, self.lqr_K)
+
+        self._setup_init()
+
+    def step(self, obs, state=None, mask=None, deterministic=False):
+        if self.measure_execution_time:
+            start_time = time.process_time()
+            action = self.sess.run(self.deterministic_action if deterministic else self.action, {self.obs_ph: obs})
+            self.last_execution_time = time.process_time() - start_time
+            value, neglogp = self.sess.run([self.value_flat, self.neglogp],{self.obs_ph: obs})
+        else:
+            if deterministic:
+                action, value, neglogp = self.sess.run([self.deterministic_action, self.value_flat, self.neglogp],
+                                                       {self.obs_ph: obs})
+            else:
+                action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp],
+                                                       {self.obs_ph: obs})
+        return action, value, self.initial_state, neglogp
+
+    def proba_step(self, obs, state=None, mask=None):
+        return self.sess.run(self.policy_proba, {self.obs_ph: obs})
+
+    def value(self, obs, state=None, mask=None):
+        return self.sess.run(self.value_flat, {self.obs_ph: obs})
+
+
+class ETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they are correct)
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, A, B, Q, R, obs_module_indices, std=1, reuse=False, layers=None, net_arch=None,
+                 act_fun=tf.tanh, cnn_extractor=nature_cnn, feature_extraction="mlp", measure_execution_time=False, **kwargs):
+        from stable_baselines.lqr.policy import LQR
+        dist_type = MixProbabilityDistributionType
+        super(ETMPCLQRPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=reuse,
+                                                scale=(feature_extraction == "cnn"), dist_type=dist_type)
+
+        #self._kwargs_check(feature_extraction, kwargs)
+        self.obs_module_indices = obs_module_indices
+        self.lqr = LQR(A, B, Q, R)
+        self.mpc_actions = []
+        self.mpc_actions_mb = []
+
+        if layers is not None:
+            warnings.warn("Usage of the `layers` parameter is deprecated! Use net_arch instead "
+                          "(it has a different semantics though).", DeprecationWarning)
+            if net_arch is not None:
+                warnings.warn("The new `net_arch` parameter overrides the deprecated `layers` parameter!",
+                              DeprecationWarning)
+
+        if net_arch is None:
+            if layers is None:
+                layers = {"vf": [128, 128], "pi": [32, 32]}
+            net_arch = [layers]
+
+        self.measure_execution_time = measure_execution_time
+        self.last_execution_time = None
+
+        with tf.variable_scope("model", reuse=reuse):
+            K_num = tf.constant(self.lqr.K_num.astype(np.float32))
+            K_grad = tf.constant(self.lqr._grad_K().astype(np.float32))
+            weights_num = tf.constant(self.lqr.get_weights().astype(np.float32).reshape(1, -1))
+            #self.lqr_K = tf.get_variable(initializer=K_num, trainable=False, name="LQR_K", use_resource=True)
+            #self.lqr_K_grad = tf.get_variable(initializer=K_grad, trainable=False, name="LQR_K_grad", use_resource=True)
+            #self.weights = tf.get_variable(initializer=weights_num, trainable=True, name="LQR_weights", use_resource=True)
+
+            mpc_action_shape = [None] + list(ac_space.shape)
+            mpc_action_shape[-1] -= 1
+            self.mpc_action_ph = tf.placeholder(tf.float32, shape=mpc_action_shape, name="mpc_action_ph")
+
+            et_mask = np.array([m == "et" for m in self.obs_module_indices])
+            lqr_mask = np.array([m == "lqr" for m in self.obs_module_indices])
+            et_obs = tf.boolean_mask(self.processed_obs, et_mask, name="et_obs", axis=1)
+            et_obs.set_shape([None, sum(et_mask)])
+            lqr_obs = tf.boolean_mask(self.processed_obs, lqr_mask, name="lqr_obs", axis=1)
+            lqr_obs.set_shape([None, sum(lqr_mask)])
+
+            if feature_extraction == "cnn":
+                pi_latent, vf_latent = cnn_extractor(et_obs, **kwargs)
+            else:
+                if feature_extraction == "cnn_mlp":
+                    latents = cnn_mlp_extractor(et_obs, net_arch, act_fun, **kwargs)
+                else:
+                    latents = mlp_extractor(tf.layers.flatten(et_obs), net_arch, act_fun, **kwargs)
+
+                pi_latent, vf_latent = latents
+        with tf.variable_scope("model", reuse=reuse, use_resource=True):
+            @tf.custom_gradient
+            def lqr_action(x):
+                lqr_K = tf.get_variable(initializer=K_num, trainable=False, name="LQR_K", use_resource=True)
+                weights = tf.get_variable(initializer=weights_num, trainable=True, name="LQR_weights", use_resource=True)
+                u_lqr = -tf.matmul(x, tf.transpose(lqr_K))
+                u_lqr += tf.reduce_sum(weights) * 0.0
+                def grad(dy, variables=None):
+                    lqr_K_grad = tf.get_variable(initializer=K_grad, trainable=False, name="LQR_K_grad", use_resource=True)
+                    #dy = tf.Print(dy, [tf.reduce_mean(dy)], "dy: ")
+                    return None, [tf.matmul(tf.transpose(dy), tf.matmul(x, -lqr_K_grad))]
+                    #return (dy * x, [tf.reduce_mean(dy * -tf.matmul(x, lqr_K_grad), axis=0, keepdims=True)])
+                return u_lqr, grad
+
+            self.lqr_output = lqr_action(lqr_obs)
+            self.dm_output = self.lqr_output#tf.add(tf.stop_gradient(self.mpc_action_ph), self.lqr_output, "dm_output")
+            #self.weights = tf.get_variable("LQR_weights")
+
+        with tf.variable_scope("model", reuse=reuse):
+            self._value_fn = linear(vf_latent, 'vf', 1)
+
+            self._proba_distribution, self._policy, self.q_value = \
+                self.pdtype.proba_distribution_from_latent(pi_latent, vf_latent, self.dm_output, self.mpc_action_ph, et_0_std=std, et_1_std=std, init_scale=0.01,
+                                                           init_bias=-3.0, init_bias_vf=0.0) # TODO: set bias to 3
+
+            # self._policy is just the et decision
+
+        self._setup_init()
+
+    def step(self, obs, state=None, mask=None, deterministic=False):
+        if self.measure_execution_time:
+            start_time = time.process_time()
+            action = self.sess.run(self.deterministic_action if deterministic else self.action, {self.obs_ph: obs})
+            self.last_execution_time = time.process_time() - start_time
+            value, neglogp = self.sess.run([self.value_flat, self.neglogp],{self.obs_ph: obs})
+        else:
+            if deterministic:
+                action, value, neglogp = self.sess.run([self.deterministic_action, self.value_flat, self.neglogp],
+                                                       {self.obs_ph: obs, self.mpc_action_ph: np.zeros(shape=(obs.shape[0], *self.mpc_action_ph.shape[1:]))})
+            else:
+                action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp], {self.obs_ph: obs, self.mpc_action_ph: np.zeros(shape=(obs.shape[0], *self.mpc_action_ph.shape[1:]))})
+        action[0, 0] = 0  # TODO:remove (sanity check if same results as just lqr)
+        return action, value, self.initial_state, neglogp
+
+    def proba_step(self, obs, state=None, mask=None):
+        return self.sess.run(self.policy_proba, {self.obs_ph: obs})
+
+    def value(self, obs, state=None, mask=None):
+        return self.sess.run(self.value_flat, {self.obs_ph: obs})
+
+
 class CnnPolicy(FeedForwardPolicy):
     """
     Policy object that implements actor critic, using a CNN (the nature CNN)
@@ -820,7 +1035,8 @@ _policy_registry = {
         "MlpPolicy": MlpPolicy,
         "MlpLstmPolicy": MlpLstmPolicy,
         "MlpLnLstmPolicy": MlpLnLstmPolicy,
-        "CnnMlpPolicy": CnnMlpPolicy
+        "CnnMlpPolicy": CnnMlpPolicy,
+        "LQRPolicy": LQRPolicy
     }
 }
 
