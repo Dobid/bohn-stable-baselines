@@ -10,8 +10,10 @@ from stable_baselines.common.tf_util import batch_to_seq, seq_to_batch
 from stable_baselines.common.tf_layers import conv, linear, conv_to_fc, lstm
 from stable_baselines.common.distributions import make_proba_dist_type, CategoricalProbabilityDistribution, \
     MultiCategoricalProbabilityDistribution, DiagGaussianProbabilityDistribution, BernoulliProbabilityDistribution, \
-    BetaProbabilityDistribution
+    BetaProbabilityDistribution, MixProbabilityDistribution
+from stable_baselines.common.distributions import MixProbabilityDistributionType
 from stable_baselines.common.input import observation_input
+import time
 
 
 def nature_cnn(scaled_images, act_fun=tf.nn.relu, **kwargs):
@@ -281,10 +283,10 @@ class ActorCriticPolicy(BasePolicy):
     :param scale: (bool) whether or not to scale the input
     """
 
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, scale=False, box_dist_type="gaussian"):
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, scale=False, dist_type=None):
         super(ActorCriticPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=reuse,
                                                 scale=scale)
-        self._pdtype = make_proba_dist_type(ac_space)
+        self._pdtype = make_proba_dist_type(ac_space, dist_type=dist_type)
         self._is_discrete = isinstance(ac_space, Discrete)
         self._policy = None
         self._proba_distribution = None
