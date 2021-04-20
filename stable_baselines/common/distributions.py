@@ -602,6 +602,7 @@ class MixProbabilityDistribution(ProbabilityDistribution):
         self.logits = logits
         self.probabilities = tf.sigmoid(logits)
         self.gaussian_0 = DiagGaussianProbabilityDistribution(flat_0)
+        self.gaussian_1 = DiagGaussianProbabilityDistribution(flat_1)
         super(MixProbabilityDistribution, self).__init__()
 
     def flatparam(self):
@@ -618,7 +619,6 @@ class MixProbabilityDistribution(ProbabilityDistribution):
                              axis=-1)
 
         #return self.gaussian_0.neglogp(u)
-        #return etneglogp + self.gaussian_0.neglogp(u)
         return etneglogp + tf.where(tf.squeeze(tf.equal(et, 0, name="sampled_et_cond"), axis=1), self.gaussian_0.neglogp(u), self.gaussian_1.neglogp(u), name="gaussian_neglogp")
 
     def kl(self, other):
