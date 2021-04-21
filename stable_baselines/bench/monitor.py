@@ -21,7 +21,8 @@ class Monitor(gym.Wrapper):
                  filename: Optional[str],
                  allow_early_resets: bool = True,
                  reset_keywords=(),
-                 info_keywords=()):
+                 info_keywords=(),
+                 info_mode="episode"):
         """
         A monitor wrapper for Gym environments, it is used to know the episode reward, length, time and other data.
 
@@ -59,7 +60,9 @@ class Monitor(gym.Wrapper):
         self.episode_lengths = []
         self.episode_times = []
         self.total_steps = 0
-        self.current_reset_info = {}  # extra info about the current episode, that was passed in during reset()
+        self.current_reset_info = {}  # extra info about the current episode, that was passed in during reset()'
+        assert info_mode in ["episode", "step"]
+        self.info_mode = info_mode
 
     def reset(self, **kwargs) -> np.ndarray:
         """
@@ -92,17 +95,21 @@ class Monitor(gym.Wrapper):
             raise RuntimeError("Tried to step environment that needs reset")
         observation, reward, done, info = self.env.step(action)
         self.rewards.append(reward)
-        self.infos.append(info)
+        if self.info_mode == "step":
+            self.infos.append(info)
         if done:
             self.needs_reset = True
             ep_rew = sum(self.rewards)
             eplen = len(self.rewards)
             ep_info = {"r": round(ep_rew, 6), "l": eplen, "t": round(time.time() - self.t_start, 6)}
             for key in self.info_keywords:
-                ep_info[key] = []
-                for info in self.infos:
-                    ep_info[key].append(info[key])
-                ep_info[key] = np.nanmean(ep_info[key])
+                if self.info_mode == "step":
+                    ep_info[key] = []
+                    for info in self.infos:
+                        ep_info[key].append(info[key])
+                    ep_info[key] = np.nanmean(ep_info[key])
+                else:
+                    ep_info[key] = info[key]
             self.episode_rewards.append(ep_rew)
             self.episode_lengths.append(eplen)
             self.episode_times.append(time.time() - self.t_start)
