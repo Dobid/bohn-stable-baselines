@@ -336,21 +336,20 @@ class MixProbabilityDistributionType(ProbabilityDistributionType):
     def probability_distribution_class(self):
         return MixProbabilityDistribution
 
-    def proba_distribution_from_latent(self, et_latent_vector, vf_latent_vector,  et_0_mean, et_1_mean, et_0_std=1, et_1_std=1, init_scale=1.0, init_bias=0.0, init_bias_vf=None):
+    def proba_distribution_from_latent(self, et_latent_vector, vf_latent_vector,  g_mean, g_std=1, init_scale=1.0, init_bias=0.0, init_bias_vf=None):
         if init_bias_vf is None:
             init_bias_vf = init_bias
         etparam = linear(et_latent_vector, 'pi/et', 1, init_scale=init_scale, init_bias=init_bias)
 
-        logstd_0 = tf.get_variable(name='pi/et_logstd', initializer=tf.constant(np.log(et_0_std, dtype=np.float32), shape=[1, et_0_mean.shape[-1]]), trainable=True)  # TODO: consider changing
+        logstd_0 = tf.get_variable(name='pi/et_logstd', initializer=tf.constant(np.log(g_std, dtype=np.float32), shape=[1, g_mean.shape[-1]]), trainable=True)  # TODO: consider changing
         #logstd_1 = tf.get_variable(name='pi/et_logstd_1', initializer=tf.constant(np.log(et_1_std, dtype=np.float32), shape=[1, et_1_mean.shape[-1]]), trainable=True)
-        et_0_param = tf.concat([et_0_mean, et_0_mean * 0.0 + logstd_0], axis=1)
-        et_1_param = tf.concat([et_1_mean, et_1_mean * 0.0 + logstd_0], axis=1)
+        g_param = tf.concat([g_mean, g_mean * 0.0 + logstd_0], axis=1)
 
         q_values = linear(vf_latent_vector, 'q', 1, init_scale=init_scale, init_bias=init_bias_vf)
-        return self.proba_distribution_from_flat(etparam, et_0_param, et_1_param), tf.concat([etparam, et_0_mean, et_1_mean], axis=1), q_values
+        return self.proba_distribution_from_flat(etparam, g_param), tf.concat([etparam, g_param], axis=1), q_values
 
-    def proba_distribution_from_flat(self, et, flat0, flat1):
-        return self.probability_distribution_class()(et, flat0, flat1)
+    def proba_distribution_from_flat(self, et, g_flat):
+        return self.probability_distribution_class()(et, g_flat)
 
     def param_shape(self):
         return [self.size]
@@ -604,7 +603,7 @@ class BernoulliProbabilityDistribution(ProbabilityDistribution):
 
 
 class MixProbabilityDistribution(ProbabilityDistribution):
-    def __init__(self, logits, flat_0, flat_1):
+    def __init__(self, logits, flat_g):
         """
         Probability distributions from Mixed Distribution of Bernoulli and Gaussian input
 
@@ -612,16 +611,19 @@ class MixProbabilityDistribution(ProbabilityDistribution):
         """
         self.logits = logits
         self.probabilities = tf.sigmoid(logits)
-        self.gaussian_0 = DiagGaussianProbabilityDistribution(flat_0)
-        self.gaussian_1 = DiagGaussianProbabilityDistribution(flat_1)
+        self.flat_g = flat_g
+        mean, logstd = tf.split(axis=len(flat_g.shape) - 1, num_or_size_splits=2, value=flat_g)
+        self.g_mean = mean
+        self.g_logstd = logstd
+        self.g_std = tf.exp(logstd)
         super(MixProbabilityDistribution, self).__init__()
 
     def flatparam(self):
-        return self.logits, self.gaussian_0.flatparam(), self.gaussian_1.flatparam()
+        return self.logits, self.flat_g
 
     def mode(self):
         et = tf.round(self.probabilities)
-        return tf.where(tf.squeeze(tf.equal(et, 0), axis=0), tf.concat([et, self.gaussian_0.mode()], axis=1), tf.concat([et, self.gaussian_1.mode()], axis=1))
+        return tf.concat([et, (1 - et) * self.g_mean], axis=1)
 
     def neglogp(self, x):  # TODO: should it be positive/negative (or both?).
         et, u = tf.expand_dims(x[:, 0], 1), x[:, 1:]
@@ -629,8 +631,12 @@ class MixProbabilityDistribution(ProbabilityDistribution):
                                                                           labels=et, name="etneglogp"),
                              axis=-1)
 
+        g_neglogp = 0.5 * tf.reduce_sum(tf.square((u - self.g_mean * (1 - et)) / self.g_std), axis=-1) \
+               + 0.5 * np.log(2.0 * np.pi) * tf.cast(tf.shape(u)[-1], tf.float32) \
+               + tf.reduce_sum(self.g_logstd, axis=-1)
+
         #return self.gaussian_0.neglogp(u)
-        return etneglogp + tf.where(tf.squeeze(tf.equal(et, 0, name="sampled_et_cond"), axis=1), self.gaussian_0.neglogp(u), self.gaussian_1.neglogp(u), name="gaussian_neglogp")
+        return etneglogp + g_neglogp
 
     def kl(self, other):
         raise NotImplementedError
@@ -642,15 +648,15 @@ class MixProbabilityDistribution(ProbabilityDistribution):
     def entropy(self):  # TODO: might be overestimating (i.e. counting mutual information between distributions several times). Can it be negative?
         et_ent = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits,
                                                                      labels=self.probabilities), axis=-1)
-        g_0_ent = (1 - self.probabilities) * self.gaussian_0.entropy()
-        g_1_ent = self.probabilities * self.gaussian_1.entropy()
-        return et_ent + g_0_ent + g_1_ent
+        g_ent = tf.reduce_sum(self.g_logstd + .5 * np.log(2.0 * np.pi * np.e), axis=-1)
+        return et_ent + g_ent
 
     def sample(self):
         samples_from_uniform = tf.random_uniform(tf.shape(self.probabilities))
         et = tf.cast(math_ops.less(samples_from_uniform, self.probabilities), tf.float32)
         #u = tf.zeros_like(self.gaussian_0.mean, dtype=tf.float32)
-        u = self.gaussian_0.mean + self.gaussian_0.std * tf.random_normal(tf.shape(self.gaussian_0.mean), dtype=self.gaussian_0.mean.dtype)
+        u = self.g_mean * (1 - et) + self.g_std * tf.random_normal(tf.shape(self.g_mean),
+                                                       dtype=self.g_mean.dtype)
         return tf.concat([et, u], axis=-1)
 
     @classmethod

@@ -315,7 +315,7 @@ class ActorCriticPolicy(BasePolicy):
                 self._policy_proba = [tf.nn.softmax(categorical.flatparam())
                                      for categorical in self.proba_distribution.categoricals]
             elif isinstance(self.proba_distribution, MixProbabilityDistribution):
-                self._policy_proba = [tf.nn.sigmoid(self.policy[:, 0]), self.proba_distribution.gaussian_0.mean, self.proba_distribution.gaussian_0.std, self.proba_distribution.gaussian_1.mean, self.proba_distribution.gaussian_1.std]
+                self._policy_proba = [tf.nn.sigmoid(self.policy[:, 0]), self.proba_distribution.g_mean, self.proba_distribution.g_std]#self.proba_distribution.gaussian.mean, self.proba_distribution.gaussian.std]
             else:
                 self._policy_proba = []  # it will return nothing, as it is not implemented
             if self.dual_critic:
@@ -661,21 +661,23 @@ class FeedForwardPolicy(ActorCriticPolicy):
 
             # TODO: maybe take minimum here
             self._proba_distribution, self._policy, self.q_value = \
-                self.pdtype.proba_distribution_from_latent(pi_latent, vf_latent, init_scale=0.01)
+                self.pdtype.proba_distribution_from_latent(pi_latent, vf_latent, init_scale=0.01, init_bias=3.0)#, init_bias_vf=0.0)
 
         self._setup_init()
 
     def step(self, obs, state=None, mask=None, deterministic=False):
         if self.measure_execution_time:
             start_time = time.process_time()
-        if deterministic:
-            action, value, neglogp = self.sess.run([self.deterministic_action, self.value_flat, self.neglogp],
-                                                   {self.obs_ph: obs})
-        else:
-            action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp],
-                                                   {self.obs_ph: obs})
-        if self.measure_execution_time:
+            action = self.sess.run(self.deterministic_action if deterministic else self.action, {self.obs_ph: obs})
             self.last_execution_time = time.process_time() - start_time
+            value, neglogp = self.sess.run([self.value_flat, self.neglogp],{self.obs_ph: obs})
+        else:
+            if deterministic:
+                action, value, neglogp = self.sess.run([self.deterministic_action, self.value_flat, self.neglogp],
+                                                       {self.obs_ph: obs})
+            else:
+                action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp],
+                                                       {self.obs_ph: obs})
         return action, value, self.initial_state, neglogp
 
     def proba_step(self, obs, state=None, mask=None):
@@ -867,15 +869,15 @@ class ETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they a
                 return u_lqr, grad
 
             self.lqr_output = lqr_action(lqr_obs)
-            self.dm_output = self.lqr_output#tf.add(tf.stop_gradient(self.mpc_action_ph), self.lqr_output, "dm_output")
+            #tf.add(tf.stop_gradient(self.mpc_action_ph), self.lqr_output, "dm_output")
             #self.weights = tf.get_variable("LQR_weights")
 
         with tf.variable_scope("model", reuse=reuse):
             self._value_fn = linear(vf_latent, 'vf', 1)
 
             self._proba_distribution, self._policy, self.q_value = \
-                self.pdtype.proba_distribution_from_latent(pi_latent, vf_latent, self.dm_output, self.mpc_action_ph, et_0_std=std, et_1_std=std, init_scale=0.01,
-                                                           init_bias=-3.0, init_bias_vf=0.0) # TODO: set bias to 3
+                self.pdtype.proba_distribution_from_latent(pi_latent, vf_latent, self.lqr_output, g_std=std, init_scale=0.01,
+                                                           init_bias=-0.0, init_bias_vf=0.0) # TODO: set bias to 3
 
             # self._policy is just the et decision
 
@@ -893,7 +895,7 @@ class ETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they a
                                                        {self.obs_ph: obs, self.mpc_action_ph: np.zeros(shape=(obs.shape[0], *self.mpc_action_ph.shape[1:]))})
             else:
                 action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp], {self.obs_ph: obs, self.mpc_action_ph: np.zeros(shape=(obs.shape[0], *self.mpc_action_ph.shape[1:]))})
-        action[0, 0] = 0  # TODO:remove (sanity check if same results as just lqr)
+        #action[0, 0] = 0  # TODO:remove (sanity check if same results as just lqr)
         return action, value, self.initial_state, neglogp
 
     def proba_step(self, obs, state=None, mask=None):
