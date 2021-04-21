@@ -212,6 +212,14 @@ class PPO2(ActorCriticRLModel):
                 trainer = tf.train.AdamOptimizer(learning_rate=self.learning_rate_ph, epsilon=1e-5)
                 self._train = trainer.apply_gradients(grads)
 
+                if hasattr(train_model, "lqr_output"):
+                    with tf.variable_scope("model", reuse=True):
+                        train_model.lqr_K_var = tf.get_variable("LQR_K")
+                        train_model.lqr_weights = tf.get_variable("LQR_weights")
+                    with tf.variable_scope("loss", reuse=True):
+                        train_model.lqr_K_grad_var = tf.get_variable("LQR_K_grad")
+                        #act_model.lqr_K
+
                 self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl', 'clipfrac']
 
                 with tf.variable_scope("input_info", reuse=False):
@@ -219,8 +227,12 @@ class PPO2(ActorCriticRLModel):
                     tf.summary.scalar('learning_rate', tf.reduce_mean(self.learning_rate_ph))
                     tf.summary.scalar('advantage', tf.reduce_mean(self.advs_ph))
                     tf.summary.scalar('clip_range', tf.reduce_mean(self.clip_range_ph))
+                    if hasattr(train_model.proba_distribution, "probabilities"):
+                        tf.summary.scalar("prob1", tf.reduce_mean(train_model.proba_distribution.probabilities))
+                        tf.summary.scalar("prob1var", tf.math.reduce_std(train_model.proba_distribution.probabilities))
                     if self.clip_range_vf_ph is not None:
                         tf.summary.scalar('clip_range_vf', tf.reduce_mean(self.clip_range_vf_ph))
+                    tf.summary.scalar("explained_variance", tf.reduce_mean(1 - tf.math.reduce_variance(vpred - self.rewards_ph) / tf.math.reduce_variance(self.rewards_ph)))
 
                     tf.summary.scalar('old_neglog_action_probability', tf.reduce_mean(self.old_neglog_pac_ph))
                     tf.summary.scalar('old_value_pred', tf.reduce_mean(self.old_vpred_ph))
@@ -358,16 +370,31 @@ class PPO2(ActorCriticRLModel):
                 if states is None:  # nonrecurrent version
                     update_fac = max(self.n_batch // self.nminibatches // self.noptepochs, 1)
                     inds = np.arange(self.n_batch)
-                    for epoch_num in range(self.noptepochs):
-                        np.random.shuffle(inds)
-                        for start in range(0, self.n_batch, batch_size):
-                            timestep = self.num_timesteps // update_fac + ((epoch_num *
-                                                                            self.n_batch + start) // batch_size)
-                            end = start + batch_size
-                            mbinds = inds[start:end]
-                            slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
-                            mb_loss_vals.append(self._train_step(lr_now, cliprange_now, *slices, writer=writer,
-                                                                 update=timestep, cliprange_vf=cliprange_vf_now))
+                    try:
+                        for epoch_num in range(self.noptepochs):
+                            np.random.shuffle(inds)
+                            for start in range(0, self.n_batch, batch_size):
+                                timestep = self.num_timesteps // update_fac + ((epoch_num *
+                                                                                self.n_batch + start) // batch_size)
+                                end = start + batch_size
+                                mbinds = inds[start:end]
+                                self.mbinds = mbinds
+                                slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
+                                if hasattr(self.train_model, "mpc_action_ph") and False:
+                                    self.train_model.mpc_actions_mb = self.train_model.mpc_actions[mbinds]
+                                mb_loss_vals.append(self._train_step(lr_now, cliprange_now, ent_coef_now, *slices, writer=writer,
+                                                                     update=timestep, cliprange_vf=cliprange_vf_now))
+                                if hasattr(self.train_model, "lqr_output"):
+                                    lqr_weights = self.sess.run(self.train_model.lqr_weights)
+                                    self.train_model.lqr.set_weights(lqr_weights)
+                                    K_num, K_grad = self.train_model.lqr.K_num, self.train_model.lqr._grad_K()
+                                    self.sess.run([self.train_model.lqr_K_var.assign(K_num), self.train_model.lqr_K_grad_var.assign(K_grad)])
+                                if self.target_kl is not None and mb_loss_vals[-1][-2] > self.target_kl:
+                                    raise KLDivergenceException
+                    except KLDivergenceException:
+                        print("Update stopped early (it {}/{}) because approx kl divergence is bigger than target kl {}/{}".format(epoch_num, self.noptepochs, mb_loss_vals[-1][-2], self.target_kl))
+
+                            #if hasattr(self.train_model, "mpc_action_ph"): # TODO: update here if std becomes trainable
                 else:  # recurrent version
                     update_fac = max(self.n_batch // self.nminibatches // self.noptepochs // self.n_steps, 1)
                     assert self.n_envs % self.nminibatches == 0
@@ -387,6 +414,34 @@ class PPO2(ActorCriticRLModel):
                             mb_loss_vals.append(self._train_step(lr_now, cliprange_now, *slices, update=timestep,
                                                                  writer=writer, states=mb_states,
                                                                  cliprange_vf=cliprange_vf_now))
+                if hasattr(self.train_model, "lqr_output"):
+                    # Act model shares parameters with train model
+                    #lqr_weights = self.sess.run(self.train_model.weights)
+                    #self.act_model.lqr.set_weights(lqr_weights)
+                    #K_num, K_grad = self.act_model.lqr.K_num, self.act_model.lqr._grad_K()
+                    #self.sess.run([self.act_model.lqr_K.assign(K_num), self.act_model.lqr_K_grad.assign(K_grad)])
+
+                    Q = self.train_model.lqr.get_numeric_value("Q")
+                    R = self.train_model.lqr.get_numeric_value("R")
+                    K = self.train_model.lqr.get_numeric_value("K")
+
+                    for k, v in zip(["Q", "R", "K"], [Q, R, K]):
+                        v_flat = v.flatten()
+                        for v_i in range(v_flat.shape[0]):
+                            if len(v.shape) == 1:
+                                r, c = 1, ""
+                            else:
+                                r, c = v_i // v.shape[1] + 1, v_i % v.shape[1] + 1
+                            summary = tf.Summary.Value(tag="LQR/{}_{}{}".format(k, r, c), simple_value=v_flat[v_i])
+                            writer.add_summary(tf.Summary(value=[summary]), self.num_timesteps)
+
+                    if hasattr(self.train_model, "mpc_action_ph") and False:
+                        self.env.env_method("update_lqr", Q=Q, R=R)
+                    for param in self.params:
+                        if param.name == "model/pi/et_logstd:0":
+                           std = np.squeeze(np.exp(self.sess.run(param)), axis=0)
+                           self.env.env_method("set_action_noise_properties", [{"scale": std[i]} for i in range(std.shape[0])])
+                           break
 
                 loss_vals = np.mean(mb_loss_vals, axis=0)
                 t_now = time.time()
