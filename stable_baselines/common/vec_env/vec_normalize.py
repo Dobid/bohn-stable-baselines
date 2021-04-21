@@ -200,8 +200,10 @@ class VecNormalize(VecEnvWrapper):
         warnings.warn("Usage of `load_running_average` is deprecated. Please "
                       "use `load` or pickle instead.", DeprecationWarning)
         file_names = ['obs_rms', 'ret_rms']
-        if suffix is not None:
-            file_names = [f + suffix for f in file_names]
         for name in file_names:
-            with open("{}/{}.pkl".format(path, name), 'rb') as file_handler:
+            if suffix is not None:
+                load_name = "{}_{}".format(name, suffix)
+            else:
+                load_name = name
+            with open("{}/{}.pkl".format(path, load_name), 'rb') as file_handler:
                 setattr(self, name, pickle.load(file_handler))
