@@ -12,6 +12,7 @@ def _worker(remote, parent_remote, env_fn_wrapper):
     parent_remote.close()
     env = env_fn_wrapper.var()
     done_not_reset = False
+    reset_on_done = True
     reset_data = []
     scenarios_to_run = []
     gather_reset_data = False
@@ -22,7 +23,7 @@ def _worker(remote, parent_remote, env_fn_wrapper):
             if cmd == 'step':
                 if not done_not_reset:
                     observation, reward, done, info = env.step(data)
-                    if done and getattr(env, "training", True):
+                    if done and reset_on_done:#getattr(env, "training", True):
                         if gather_reset_data:
                             for i in range(5):
                                 r_data = {"obs": env.reset()}
@@ -70,6 +71,8 @@ def _worker(remote, parent_remote, env_fn_wrapper):
                 remote.send(getattr(env, data))
             elif cmd == 'set_attr':
                 remote.send(setattr(env, data[0], data[1]))
+            elif cmd == "set_reset_on_done":
+                reset_on_done = data
             else:
                 raise NotImplementedError
         except EOFError:
@@ -101,7 +104,7 @@ class SubprocVecEnv(VecEnv):
            Defaults to 'forkserver' on available platforms, and 'spawn' otherwise.
     """
 
-    def __init__(self, env_fns, start_method=None, sampler_manager=None):
+    def __init__(self, env_fns, start_method=None, reset_on_done=True, sampler_manager=None):
         self.waiting = False
         self.closed = False
         n_envs = len(env_fns)
@@ -127,6 +130,9 @@ class SubprocVecEnv(VecEnv):
         self.remotes[0].send(('get_spaces', None))
         observation_space, action_space = self.remotes[0].recv()
         self.sampler_manager = sampler_manager
+        self.reset_on_done = reset_on_done
+        for remote in self.remotes:
+            remote.send(("set_reset_on_done", reset_on_done))
         VecEnv.__init__(self, len(env_fns), observation_space, action_space)
 
     def step_async(self, actions):
