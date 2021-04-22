@@ -259,7 +259,6 @@ class PPO2(ActorCriticRLModel):
                 self.value = act_model.value
                 self.initial_state = act_model.initial_state
                 tf.global_variables_initializer().run(session=self.sess)  # pylint: disable=E1101
-                self.sess.run(tf.assign(self.params[11], np.array([0, 3])))
                 
                 self.summary = tf.summary.merge_all()
 
