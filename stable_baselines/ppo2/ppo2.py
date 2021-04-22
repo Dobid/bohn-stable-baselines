@@ -79,6 +79,7 @@ class PPO2(ActorCriticRLModel):
         self.old_neglog_pac_ph = None
         self.old_vpred_ph = None
         self.learning_rate_ph = None
+        self.ent_coef_ph = None
         self.clip_range_ph = None
         self.entropy = None
         self.vf_loss = None
@@ -151,6 +152,7 @@ class PPO2(ActorCriticRLModel):
                     self.old_neglog_pac_ph = tf.placeholder(tf.float32, [None], name="old_neglog_pac_ph")
                     self.old_vpred_ph = tf.placeholder(tf.float32, [None], name="old_vpred_ph")
                     self.learning_rate_ph = tf.placeholder(tf.float32, [], name="learning_rate_ph")
+                    self.ent_coef_ph = tf.placeholder(tf.float32, [], name="ent_coef_ph")
                     self.clip_range_ph = tf.placeholder(tf.float32, [], name="clip_range_ph")
 
                     neglogpac = train_model.proba_distribution.neglogp(self.action_ph)
@@ -194,7 +196,9 @@ class PPO2(ActorCriticRLModel):
                     self.approxkl = .5 * tf.reduce_mean(tf.square(neglogpac - self.old_neglog_pac_ph))
                     self.clipfrac = tf.reduce_mean(tf.cast(tf.greater(tf.abs(ratio - 1.0),
                                                                       self.clip_range_ph), tf.float32))
-                    loss = self.pg_loss - self.entropy * self.ent_coef + self.vf_loss * self.vf_coef
+
+                    loss = self.pg_loss - self.entropy * self.ent_coef_ph + self.vf_loss * self.vf_coef
+                    #loss = self.pg_loss + self.vf_loss * self.vf_coef
 
                     tf.summary.scalar('entropy_loss', self.entropy)
                     tf.summary.scalar('policy_gradient_loss', self.pg_loss)
@@ -262,7 +266,7 @@ class PPO2(ActorCriticRLModel):
                 
                 self.summary = tf.summary.merge_all()
 
-    def _train_step(self, learning_rate, cliprange, obs, returns, masks, actions, values, neglogpacs, update,
+    def _train_step(self, learning_rate, cliprange, ent_coef, obs, returns, masks, actions, values, neglogpacs, update,
                     writer, states=None, cliprange_vf=None):
         """
         Training of PPO2 Algorithm
@@ -287,7 +291,7 @@ class PPO2(ActorCriticRLModel):
         td_map = {self.train_model.obs_ph: obs, self.action_ph: actions,
                   self.advs_ph: advs, self.rewards_ph: returns,
                   self.learning_rate_ph: learning_rate, self.clip_range_ph: cliprange,
-                  self.old_neglog_pac_ph: neglogpacs, self.old_vpred_ph: values}
+                  self.old_neglog_pac_ph: neglogpacs, self.old_vpred_ph: values, self.ent_coef_ph: ent_coef}
         if states is not None:
             td_map[self.train_model.states_ph] = states
             td_map[self.train_model.dones_ph] = masks
@@ -325,6 +329,7 @@ class PPO2(ActorCriticRLModel):
         # Transform to callable if needed
         self.learning_rate = get_schedule_fn(self.learning_rate)
         self.cliprange = get_schedule_fn(self.cliprange)
+        self.ent_coef = get_schedule_fn(self.ent_coef)
         cliprange_vf = get_schedule_fn(self.cliprange_vf)
 
         samples = deque(maxlen=5 * self.env.num_envs * 10)
@@ -351,6 +356,7 @@ class PPO2(ActorCriticRLModel):
                 t_start = time.time()
                 frac = 1.0 - (update - 1.0) / n_updates
                 lr_now = self.learning_rate(frac)
+                ent_coef_now = self.ent_coef(frac)
                 cliprange_now = self.cliprange(frac)
                 cliprange_vf_now = cliprange_vf(frac)
 
@@ -413,7 +419,7 @@ class PPO2(ActorCriticRLModel):
                             mb_flat_inds = flat_indices[mb_env_inds].ravel()
                             slices = (arr[mb_flat_inds] for arr in (obs, returns, masks, actions, values, neglogpacs))
                             mb_states = states[mb_env_inds]
-                            mb_loss_vals.append(self._train_step(lr_now, cliprange_now, *slices, update=timestep,
+                            mb_loss_vals.append(self._train_step(lr_now, cliprange_now, ent_coef_now, *slices, update=timestep,
                                                                  writer=writer, states=mb_states,
                                                                  cliprange_vf=cliprange_vf_now))
                 if hasattr(self.train_model, "lqr_output"):
