@@ -365,8 +365,6 @@ class PPO2(ActorCriticRLModel):
                 rollout = self.runner.run(callback)
                 # Unpack
                 obs, returns, masks, actions, values, neglogpacs, states, ep_infos, true_reward = rollout
-
-                self.actions = actions
                 callback.on_rollout_end()
 
                 # Early stopping due to the callback
