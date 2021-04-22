@@ -53,7 +53,7 @@ class PPO2(ActorCriticRLModel):
         If None, the number of cpu of the current machine will be used.
     """
     def __init__(self, policy, env, gamma=0.99, n_steps=128, ent_coef=0.01, learning_rate=2.5e-4, vf_coef=0.5,
-                 max_grad_norm=0.5, lam=0.95, nminibatches=4, noptepochs=4, cliprange=0.2, cliprange_vf=None,
+                 max_grad_norm=0.5, lam=0.95, nminibatches=4, noptepochs=4, cliprange=0.2, target_kl=None, cliprange_vf=None,
                  verbose=0, tensorboard_log=None, _init_setup_model=True, policy_kwargs=None, time_aware=False,
                  full_tensorboard_log=False, seed=None, n_cpu_tf_sess=None):
 
@@ -70,6 +70,7 @@ class PPO2(ActorCriticRLModel):
         self.noptepochs = noptepochs
         self.tensorboard_log = tensorboard_log
         self.full_tensorboard_log = full_tensorboard_log
+        self.target_kl = target_kl
         
         self.time_aware = time_aware
         self.action_ph = None
@@ -439,11 +440,12 @@ class PPO2(ActorCriticRLModel):
 
                     if hasattr(self.train_model, "mpc_action_ph") and False:
                         self.env.env_method("update_lqr", Q=Q, R=R)
-                    for param in self.params:
-                        if param.name == "model/pi/et_logstd:0":
-                           std = np.squeeze(np.exp(self.sess.run(param)), axis=0)
-                           self.env.env_method("set_action_noise_properties", [{"scale": std[i]} for i in range(std.shape[0])])
-                           break
+                    if False:
+                        for param in self.params:
+                            if param.name == "model/pi/et_logstd:0":
+                               std = np.squeeze(np.exp(self.sess.run(param)), axis=0)
+                               self.env.env_method("set_action_noise_properties", [{"scale": std[i]} for i in range(std.shape[0])])
+                               break
 
                 loss_vals = np.mean(mb_loss_vals, axis=0)
                 t_now = time.time()
