@@ -105,6 +105,9 @@ class FeedForwardPolicy(TD3Policy):
                                                 reuse=reuse,
                                                 scale=(feature_extraction == "cnn" and cnn_extractor == nature_cnn))
 
+        if isinstance(act_fun, str):
+            act_fun = getattr(tf.nn, act_fun)
+
         self._kwargs_check(feature_extraction, kwargs)
         self.layer_norm = layer_norm
         self.feature_extraction = feature_extraction

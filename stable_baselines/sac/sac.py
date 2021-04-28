@@ -62,9 +62,9 @@ class SAC(OffPolicyRLModel):
 
     def __init__(self, policy, env, gamma=0.99, learning_rate=3e-4, buffer_size=50000, buffer_type=ReplayBuffer,
                  learning_starts=100, train_freq=1, batch_size=64,
-                 tau=0.005, reward_scale=1, ent_coef='auto', target_update_interval=1, action_l2_scale=0,
+                 tau=0.005, reward_scale=1, ent_coef='auto', target_update_interval=1, action_l2_scale=None,
                  gradient_steps=1, target_entropy='auto', action_noise=None,
-                 random_exploration=0.0, verbose=0, write_freq=1, tensorboard_log=None,
+                 random_exploration=0.0, spatial_similarity_coef=None, temporal_similarity_coef=None, verbose=0, write_freq=1, tensorboard_log=None,
                  _init_setup_model=True, policy_kwargs=None, full_tensorboard_log=False,
                  seed=None, n_cpu_tf_sess=None, time_aware=False):
 
@@ -92,6 +92,10 @@ class SAC(OffPolicyRLModel):
         self.action_noise = action_noise
         self.random_exploration = random_exploration
         self.reward_scale = reward_scale
+        self.spatial_similarity_coef = spatial_similarity_coef
+        self.temporal_similarity_coef = temporal_similarity_coef
+        self.similar_obs_ph = None
+
 
         self.value_fn = None
         self.graph = None
@@ -106,7 +110,7 @@ class SAC(OffPolicyRLModel):
         self.full_tensorboard_log = full_tensorboard_log
 
         self.obs_target = None
-        self.target_policy = None
+        self.target_policy_tf = None
         self.actions_ph = None
         self.rewards_ph = None
         self.terminals_ph = None
@@ -148,16 +152,24 @@ class SAC(OffPolicyRLModel):
                     # Create policy and target TF objects
                     self.policy_tf = self.policy(self.sess, self.observation_space, self.action_space,
                                                  **self.policy_kwargs)
-                    self.target_policy = self.policy(self.sess, self.observation_space, self.action_space,
-                                                     **self.policy_kwargs)
+                    self.target_policy_tf = self.policy(self.sess, self.observation_space, self.action_space,
+                                                **self.policy_kwargs)
+
+                    if hasattr(self.policy_tf, "extra_phs"):
+                        for ph_name in self.policy_tf.extra_phs:
+                            if "target_" in ph_name:
+                                self.train_extra_phs[ph_name] = getattr(self.target_policy_tf,
+                                                                        ph_name.replace("target_", "") + "_ph")
+                            else:
+                                self.train_extra_phs[ph_name] = getattr(self.policy_tf, ph_name + "_ph")
 
                     # Initialize Placeholders
                     self.observations_ph = self.policy_tf.obs_ph
                     # Normalized observation for pixels
                     self.processed_obs_ph = self.policy_tf.processed_obs
-                    self.next_observations_ph = self.target_policy.obs_ph
-                    self.processed_next_obs_ph = self.target_policy.processed_obs
-                    self.action_target = self.target_policy.action_ph
+                    self.next_observations_ph = self.target_policy_tf.obs_ph
+                    self.processed_next_obs_ph = self.target_policy_tf.processed_obs
+                    self.action_target = self.target_policy_tf.action_ph
                     self.terminals_ph = tf.placeholder(tf.float32, shape=(None, 1), name='terminals')
                     self.rewards_ph = tf.placeholder(tf.float32, shape=(None, 1), name='rewards')
                     self.actions_ph = tf.placeholder(tf.float32, shape=(None,) + self.action_space.shape,
@@ -237,12 +249,22 @@ class SAC(OffPolicyRLModel):
 
                 with tf.variable_scope("target", reuse=False):
                     # Create the value network
-                    _, _, value_target = self.target_policy.make_critics(self.processed_next_obs_ph,
+                    _, _, value_target = self.target_policy_tf.make_critics(self.processed_next_obs_ph,
                                                                          create_qf=False, create_vf=True)
                     self.value_target = value_target
 
                     if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.use_mpc_vf_target:
-                        self.mpc_value_fn_term_state = self.target_policy.make_mpc_value_fn(self.next_mpc_state_ph)
+                        self.mpc_value_fn_term_state = self.target_policy_tf.make_mpc_value_fn(self.next_mpc_state_ph)
+
+                if self.temporal_similarity_coef is not None:
+                    with tf.variable_scope("model", reuse=True):
+                        self.deterministic_action_next, _, _ = self.policy_tf.make_actor(self.processed_next_obs_ph, reuse=True)
+
+                if self.spatial_similarity_coef is not None:
+                    self.similar_obs_ph = tf.placeholder(tf.float32, shape=self.observations_ph.shape, name="similar_obs_ph")
+                    self.train_extra_phs["similar_obs"] = self.similar_obs_ph
+                    with tf.variable_scope("model", reuse=True):
+                        self.deterministic_action_similar, _, _ = self.policy_tf.make_actor(self.similar_obs_ph, reuse=True)
 
                 with tf.variable_scope("loss", reuse=False):
                     # Take the min of the two Q-Values (Double-Q Learning)
@@ -280,7 +302,17 @@ class SAC(OffPolicyRLModel):
                     # regularization loss for the Gaussian parameters
                     # this is not used for now
                     # policy_loss = (policy_kl_loss + policy_regularization_loss)
-                    policy_loss = policy_kl_loss + self.action_l2_scale * tf.nn.l2_loss(policy_out)
+                    policy_loss = policy_kl_loss
+                    if self.action_l2_scale is not None:
+                        action_loss = self.action_l2_scale * tf.nn.l2_loss(self.policy_tf.policy_pre_activation)
+                        policy_loss += action_loss
+                    if self.spatial_similarity_coef is not None:
+                        spatial_similarity_loss = self.spatial_similarity_coef * tf.nn.l2_loss(self.deterministic_action - self.deterministic_action_similar, name="spatial_similarity_loss") / self.action_space.shape[0]
+                        policy_loss += spatial_similarity_loss
+
+                    if self.temporal_similarity_coef is not None:
+                        temporal_similarity_loss = self.temporal_similarity_coef * tf.nn.l2_loss(self.deterministic_action - self.deterministic_action_next, name="temporal_similarity_loss") / self.action_space.shape[0]
+                        policy_loss += temporal_similarity_loss
 
 
                     # Target for value fn regression
@@ -351,8 +383,14 @@ class SAC(OffPolicyRLModel):
                     if ent_coef_loss is not None:
                         tf.summary.scalar('ent_coef_loss', ent_coef_loss)
                         tf.summary.scalar('ent_coef', self.ent_coef)
-                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.train_mpc_value_fn and self.policy_tf.mpc_value_fn_path is None:
+                    if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.train_mpc_value_fn:
                         tf.summary.scalar("mpc_value_fn_loss", mpc_value_fn_loss)
+                    if self.spatial_similarity_coef is not None:
+                        tf.summary.scalar("spatial_similarity_loss", spatial_similarity_loss)
+                    if self.temporal_similarity_coef is not None:
+                        tf.summary.scalar("temporal_similarity_loss", temporal_similarity_loss)
+                    if self.action_l2_scale:
+                        tf.summary.scalar("action_l2_loss", action_loss)
 
                     tf.summary.scalar('learning_rate', tf.reduce_mean(self.learning_rate_ph))
 
@@ -382,6 +420,8 @@ class SAC(OffPolicyRLModel):
             batch_extra["mpc_next_state"] = batch_mpc[3]
             batch_extra["mpc_n_step"] = batch_mpc[5].get("n_step", np.ones((256, 1)))
             batch_extra["mpc_terminals"] = batch_mpc[4]
+        if self.spatial_similarity_coef is not None:
+            batch_extra["similar_obs"] = np.random.normal(batch_obs, 0.01)
 
         feed_dict = {
             self.observations_ph: batch_obs,
@@ -466,6 +506,7 @@ class SAC(OffPolicyRLModel):
             n_updates = 0
             infos_values = [[] for _ in range(self.n_envs)]
             done = [[False] for _ in range(self.n_envs)]
+            episode_data = [[] for _ in range(self.n_envs)]
 
             callback.on_training_start(locals(), globals())
             callback.on_rollout_start()
@@ -483,13 +524,17 @@ class SAC(OffPolicyRLModel):
                     else:
                         unscaled_action = random_sampler(obs)
                     #unscaled_action = np.array([[1]])
+                    #unscaled_action = np.random.uniform(25, 50, size=(1,))
                     action = scale_action(action_space, unscaled_action)
                 else:
                     if self.n_envs == 1:
                         step_obs = obs[0]
                     else:
                         step_obs = obs
-                    action = self.policy_tf.step(step_obs[None], deterministic=False)
+                    if self.n_envs > 1:
+                        action = self.policy_tf.step(step_obs, deterministic=False)
+                    else:
+                        action = self.policy_tf.step(step_obs[None], deterministic=False)
                     if vectorize_objects:
                         action = action.flatten()
                     # Add noise to the action (improve exploration,
@@ -538,6 +583,10 @@ class SAC(OffPolicyRLModel):
                                         (info_time_limit is not None and info_time_limit)
                         extra_data[env_i]["bootstrap"] = bootstrap
 
+                if hasattr(self.policy, "collect_data"):
+                    policy_data = self.policy_tf.collect_data(locals(), globals())
+                    for env_i in range(self.n_envs):
+                        extra_data[env_i].update(policy_data[env_i])
 
                 for env_i in range(self.n_envs):
                     #extra_data[env_i].update(info[env_i].get("data", {}))
@@ -546,6 +595,9 @@ class SAC(OffPolicyRLModel):
                         self.mpc_replay_buffer.add(info[env_i]["data"]["mpc_state"], np.array([0]), info[env_i]["data"]["mpc_rewards"], info[env_i]["data"]["mpc_next_state"], float(done[env_i]), **mpc_extra_data)
                     self.replay_buffer.add(obs_[env_i], action[env_i], reward_[env_i], new_obs_[env_i],
                                            float(done[env_i]), **extra_data[env_i])
+
+                for env_i in range(self.n_envs):
+                    episode_data[env_i].append({"obs": obs, "action": action, "reward": reward, "obs_tp1": new_obs, "done": done, **extra_data[env_i]})
 
                 obs = new_obs
                 # Save the unnormalized observation
@@ -605,15 +657,11 @@ class SAC(OffPolicyRLModel):
                         if vectorize_objects:
                             obs = [obs]
                         episode_rewards[env_i].append(0.0)
+                        episode_data[env_i] = []
 
                         maybe_is_success = info[env_i].get('is_success')
                         if maybe_is_success is not None:
                             episode_successes.append(float(maybe_is_success))
-
-                if len(episode_rewards[-101:-1]) == 0:
-                    mean_reward = -np.inf
-                else:
-                    mean_reward = round(float(np.mean(episode_rewards[-101:-1])), 1)
 
                 num_episodes = sum([len(ep_rews) for ep_rews in episode_rewards])
                 # Display training infos
@@ -621,7 +669,7 @@ class SAC(OffPolicyRLModel):
                     if len(episode_rewards[0][-101:-1]) == 0:
                         mean_reward = -np.inf
                     else:
-                        mean_reward = round(float(np.mean([np.mean(ep_r[-101:-1]) for ep_r in episode_rewards])), 1)
+                        mean_reward = round(float(np.mean([np.mean(er[-101:-1]) for er in episode_rewards])), 1)
 
                     fps = int(step * self.n_envs / (time.time() - start_time))
 
