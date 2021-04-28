@@ -179,12 +179,15 @@ class FeedForwardPolicy(SACPolicy):
     """
 
     def __init__(self, sess, ob_space, ac_space, n_env=1, n_steps=1, n_batch=None, reuse=False, layers=None,
-                 cnn_extractor=nature_cnn, feature_extraction="cnn", reg_weight=0.0,
+                 cnn_extractor=nature_cnn, feature_extraction="cnn", reg_weight=0.0, initial_std=1,
                  layer_norm=False, act_fun=tf.nn.relu, obs_module_indices=None, **kwargs):
         super(FeedForwardPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch,
                                                 reuse=reuse,
                                                 scale=(feature_extraction == "cnn" and cnn_extractor == nature_cnn))
+        if isinstance(act_fun, str):
+            act_fun = getattr(tf.nn, act_fun)
 
+        self.initial_std = initial_std
         self._kwargs_check(feature_extraction, kwargs)
         self.layer_norm = layer_norm
         self.feature_extraction = feature_extraction
@@ -201,6 +204,8 @@ class FeedForwardPolicy(SACPolicy):
         self.reg_weight = reg_weight
         self.entropy = None
         self.obs_module_indices = obs_module_indices
+
+        self.policy_pre_activation = None
 
         assert len(layers) >= 1, "Error: must have at least one hidden layer for the policy."
 
@@ -224,7 +229,7 @@ class FeedForwardPolicy(SACPolicy):
             self.act_mu = mu_ = tf.layers.dense(pi_h, self.ac_space.shape[0], activation=None, kernel_initializer=ortho_init(0.01))
             # Important difference with SAC and other algo such as PPO:
             # the std depends on the state, so we cannot use stable_baselines.common.distribution
-            log_std = tf.layers.dense(pi_h, self.ac_space.shape[0], activation=None)
+            log_std = tf.layers.dense(pi_h, self.ac_space.shape[0], activation=None) + np.log(self.initial_std)
 
         # Regularize policy output (not used for now)
         # reg_loss = self.reg_weight * 0.5 * tf.reduce_mean(log_std ** 2)
@@ -237,16 +242,19 @@ class FeedForwardPolicy(SACPolicy):
         # Original Implementation
         log_std = tf.clip_by_value(log_std, LOG_STD_MIN, LOG_STD_MAX)
 
-        self.std = std = tf.exp(log_std)
+        std = tf.exp(log_std)
         # Reparameterization trick
         pi_ = mu_ + tf.random_normal(tf.shape(mu_)) * std
         logp_pi = gaussian_likelihood(pi_, mu_, log_std)
-        self.entropy = gaussian_entropy(log_std)
         # MISSING: reg params for log and mu
         # Apply squashing and account for it in the probability
         deterministic_policy, policy, logp_pi = apply_squashing_func(mu_, pi_, logp_pi)
-        self.policy = policy
-        self.deterministic_policy = deterministic_policy
+        if not reuse:
+            self.policy_pre_activation = pi_
+            self.std = std
+            self.entropy = gaussian_entropy(log_std)
+            self.policy = policy
+            self.deterministic_policy = deterministic_policy
 
         return deterministic_policy, policy, logp_pi
 
@@ -371,6 +379,53 @@ class AHMPCPolicy(FeedForwardPolicy):  # TODO: consider if next state should hav
         w_inds = [i for i, v in enumerate(self.mpc_vf_w_b) if "kernel" in v.name]
         b_inds = [i for i, v in enumerate(self.mpc_vf_w_b) if "bias" in v.name]
         return [wbs[i] for i in w_inds], [wbs[i] for i in b_inds]
+
+
+class DRCnnMlpPolicy(FeedForwardPolicy):
+    """
+    Policy object that implements actor critic, using a CNN (the nature CNN)
+
+    :param sess: (TensorFlow session) The current TensorFlow session
+    :param ob_space: (Gym Space) The observation space of the environment
+    :param ac_space: (Gym Space) The action space of the environment
+    :param n_env: (int) The number of environments to run
+    :param n_steps: (int) The number of steps to run for each environment
+    :param n_batch: (int) The number of batch to run (n_envs * n_steps)
+    :param reuse: (bool) If the policy is reusable or not
+    :param _kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
+    """
+
+    def __init__(self, sess, ob_space, ac_space, my_size, n_env=1, n_steps=1, n_batch=None, reuse=False, **_kwargs):
+        super(DRCnnMlpPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse,
+                                           cnn_extractor=cnn_1d_extractor, feature_extraction="cnn", **_kwargs)
+
+        with tf.variable_scope("input", reuse=False):
+            self.my_ph = tf.placeholder(tf.float32, (self.n_batch, *my_size), name="my_ph")  # (done t-1)
+        self.extra_phs = ["my", "target_my"]
+        self.extra_data_names = ["my", "target_my"]
+
+    def make_critics(self, obs=None, action=None, my=None, reuse=False, scope="values_fn", create_vf=True, create_qf=True):
+        if my is None:
+            my = self.my_ph
+
+        return super().make_critics(obs, action, reuse, scope, create_vf=create_vf, create_qf=create_qf, extracted_callback=lambda x: tf.concat([x, my], axis=-1))
+
+    def collect_data(self, _locals, _globals):
+        data = []
+        for env_i in range(_locals["self"].n_envs):
+            d = {}
+            if len(_locals["episode_data"][env_i]) == 0 or "my" not in _locals["episode_data"][env_i]:
+                if _locals["self"].n_envs == 1:
+                    d["my"] = _locals["self"].env.get_env_parameters()
+                else:
+                    d["my"] = _locals["self"].env.env_method("get_env_parameters", indices=env_i)[0]
+            else:
+                d["my"] = _locals["episode_data"][env_i][-1]["my"]
+
+            d["target_my"] = d["my"]
+            data.append(d)
+
+        return data
 
 
 class CnnPolicy(FeedForwardPolicy):
