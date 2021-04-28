@@ -20,7 +20,7 @@ class HERGoalEnvWrapper(object):
     :param env: (gym.GoalEnv)
     """
 
-    def __init__(self, env, norm=False, clip_obs=10):
+    def __init__(self, env, norm=False, clip_obs=10, update_every=8):  # TODO: sync with other wrappers (probably has to be done outside this class)
         super(HERGoalEnvWrapper, self).__init__()
         self._env = env
         self.metadata = self._env.metadata
@@ -72,6 +72,8 @@ class HERGoalEnvWrapper(object):
         self.orig_obs = None
         self.epsilon = 1e-5
 
+        self.update_every = update_every
+
         self.disabled = False
         if norm:
             obs_norm_shape = [self.observation_space.shape[-1]]
@@ -120,10 +122,9 @@ class HERGoalEnvWrapper(object):
         if self.norm:
             self.orig_obs = np.copy(obs)
             obs = self.normalize_observation(obs, update=True)
-            if done:
-                if len(self.ep_obs_data) > 0:
-                    self.obs_rms.update(np.stack(self.ep_obs_data, axis=0))
-                    self.ep_obs_data = []
+            if len(self.ep_obs_data) > self.update_every:
+                self.obs_rms.update(np.stack(self.ep_obs_data, axis=0))
+                self.ep_obs_data = []
         return obs, reward, done, info
 
     def normalize_observation(self, obs, update):
@@ -140,12 +141,13 @@ class HERGoalEnvWrapper(object):
                     self.ep_obs_data.append(obs[0, :-self.goal_dim])
                 else:
                     self.ep_obs_data.append(obs[:-self.goal_dim])
-            obs[..., :-self.goal_dim] = np.clip((obs[..., :-self.goal_dim] - self.obs_rms.mean) /
-                                           np.sqrt(self.obs_rms.var + self.epsilon),
-                                           -self.clip_obs, self.clip_obs)
-            obs[..., -self.goal_dim:] = np.clip((obs[..., -self.goal_dim:] - self.obs_rms.mean[..., -self.goal_dim:]) /
-                                           np.sqrt(self.obs_rms.var[..., -self.goal_dim:] + self.epsilon),
-                                           -self.clip_obs, self.clip_obs)
+            if self.obs_rms.count > 1:
+                obs[..., :-self.goal_dim] = np.clip((obs[..., :-self.goal_dim] - self.obs_rms.mean) /
+                                               np.sqrt(self.obs_rms.var + self.epsilon),
+                                               -self.clip_obs, self.clip_obs)
+                obs[..., -self.goal_dim:] = np.clip((obs[..., -self.goal_dim:] - self.obs_rms.mean[..., -self.goal_dim:]) /
+                                               np.sqrt(self.obs_rms.var[..., -self.goal_dim:] + self.epsilon),
+                                               -self.clip_obs, self.clip_obs)
 
             if is_dict:
                 return self.convert_obs_to_dict(obs)
