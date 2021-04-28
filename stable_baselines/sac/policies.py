@@ -258,8 +258,7 @@ class FeedForwardPolicy(SACPolicy):
 
         return deterministic_policy, policy, logp_pi
 
-    def make_critics(self, obs=None, action=None, reuse=False, scope="values_fn",
-                     create_vf=True, create_qf=True):
+    def make_critics(self, obs=None, action=None, reuse=False, scope="values_fn", create_vf=True, create_qf=True, extracted_callback=None):
         if obs is None:
             obs = self.processed_obs
 
@@ -271,6 +270,9 @@ class FeedForwardPolicy(SACPolicy):
                 critics_h = self.cnn_extractor(obs, name="vf_c1", act_fun=self.activ_fn, **self.cnn_kwargs)
             else:
                 critics_h = tf.layers.flatten(obs)
+
+            if extracted_callback is not None:
+                critics_h = extracted_callback(critics_h)
 
             if create_vf:
                 # Value function
