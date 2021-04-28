@@ -363,7 +363,7 @@ class SAC(OffPolicyRLModel):
                         self.step_ops = [policy_loss, qf1_loss, qf2_loss,
                                          value_loss, qf1, qf2, value_fn, logp_pi,
                                          self.entropy, policy_train_op, train_values_op]
-                        if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.train_mpc_value_fn and self.policy_tf.mpc_value_fn_path is None:
+                        if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.train_mpc_value_fn:
                             self.step_ops.append(mpc_value_fn_train_op)
 
                         # Add entropy coefficient optimization operation if needed
@@ -402,7 +402,7 @@ class SAC(OffPolicyRLModel):
                 with self.sess.as_default():
                     self.sess.run(tf.global_variables_initializer())
                     self.sess.run(target_init_op)
-                    if self.policy_tf.mpc_value_fn_path is not None:
+                    if getattr(self.policy_tf, "mpc_value_fn_path", None) is not None:
                         self.load_parameters_by_name(self.policy_tf.mpc_value_fn_path, [p.name for p in tf_util.get_trainable_vars("model/mpc_value_fns")])  # TODO: ensure only loading mpc value fn params
 
                 self.summary = tf.summary.merge_all()
@@ -688,6 +688,7 @@ class SAC(OffPolicyRLModel):
                         for (name, val) in zip(self.infos_names, infos_values):
                             logger.logkv(name, val)
                     logger.logkv("total timesteps", self.num_timesteps)
+                    #logger.logkv("std", self.sess.run(self.policy_tf.std, feed_dict={self.observations_ph: obs[0].reshape(1, -1)})[0])
                     logger.dumpkvs()
                     # Reset infos:
                     infos_values = []
