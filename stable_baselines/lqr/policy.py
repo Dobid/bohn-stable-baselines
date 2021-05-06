@@ -8,11 +8,17 @@ class LQR:
         self.E = None  # eigenvalues
         self.eps = eps
 
-        self.A = casadi.SX.sym("A", *A.shape)
+        if isinstance(A, list):
+            A_shape = A[0].shape
+            B_shape = B[0].shape
+        else:
+            A_shape = A.shape
+            B_shape = B.shape
+        self.A = casadi.SX.sym("A", *A_shape)
         self.A_num = A
-        self.B = casadi.SX.sym("B", *B.shape)
+        self.B = casadi.SX.sym("B", *B_shape)
         self.B_num = B
-        self.cQ = casadi.SX.sym("Q", *A.shape)
+        self.cQ = casadi.SX.sym("Q", *A_shape)
         if len(Q.shape) > 1:
             try:
                 self.cQ_num = np.linalg.cholesky(Q)
@@ -20,7 +26,7 @@ class LQR:
                 self.cQ_num = np.linalg.cholesky(Q + self.eps * np.eye(Q.shape[0]))  # If still fails, notify user
         else:
             self.cQ_num = np.sqrt(Q)
-        self.cR = casadi.SX.sym("R", B.shape[1], B.shape[1])
+        self.cR = casadi.SX.sym("R", B_shape[1], B_shape[1])
         if len(R.shape) > 1:
             try:
                 self.cR_num = np.linalg.cholesky(R)
@@ -28,16 +34,20 @@ class LQR:
                 self.cR_num = np.linalg.cholesky(R + self.eps * np.eye(R.shape[0]))
         else:
             self.cR_num = np.sqrt(R)
-        self.K = casadi.SX.sym("K", B.shape[1], A.shape[1])
+        self.K = casadi.SX.sym("K", B_shape[1], A_shape[1])
         self.K_num = None
-        self.S = casadi.SX.sym("S", *A.shape)
+        self.S = casadi.SX.sym("S", *A_shape)
         self.S_num = None
         self._compute_lqr()
         self.S_eq = self.A.T @ self.S @ self.A - self.S - self.A.T @ self.S @ self.B @ self.K + self.cQ @ self.cQ.T
+        #self.S_eq_tv = self.A.T @ self.S @ self.A - self.A.T @ self.S @ self.B @ self.K + self.cQ @ self.cQ.T
+
         self.S_fun = casadi.Function("S_eq", [self.A, self.B, self.cQ, self.cR, self.S, self.K], [self.S_eq])
         self.K_eq = (self.B.T @ self.S @ self.B + self.cR @ self.cR.T) @ self.K - self.B.T @ self.S @ self.A
         self.K_fun = casadi.Function("K_eq", [self.A, self.B, self.cQ, self.cR, self.S, self.K], [self.K_eq])
         self.lqr_eq_vec = casadi.vertcat(casadi.reshape(self.S_eq, -1, 1), casadi.reshape(self.K_eq, -1, 1))
+
+        #self.lqr_eq_vec_tv = casadi.vertcat(casadi.reshape())
 
         w = []
         lqr_eq_parameters = []
@@ -65,6 +75,36 @@ class LQR:
         #self.df_dx_det_fun = casadi.Function("LQR_dx_det", [self.A, self.B, self.Q, self.R, self.S, self.K], [casadi.det(self.df_dx)])
         self.dx_dy_fun = casadi.Function("LQR_grad", [self.A, self.B, self.cQ, self.cR, self.S, self.K], [self.dx_dy])
         #self._add_save_attr(_w='numpy')
+
+        # Time-Varying Derivatives
+        #tv_params = casadi.vertcat(self.lqr_eq_parameters, casadi.reshape(self.S, -1, 1))
+        self.S_tv_eq = self.A.T @ self.S @ self.A - self.A.T @ self.S @ self.B @ casadi.inv(self.cR @ self.cR + self.B.T @ self.S @ self.B) @ self.B.T @ self.S @ self.A + self.cQ @ self.cQ.T
+        self.K_tv_eq = -casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.S @ self.A
+        self.S_tv_eq_grad = casadi.jacobian(self.S_tv_eq, self.lqr_eq_parameters)
+        self.S_tv_eq_grad_s = casadi.jacobian(self.S_tv_eq, self.S)
+
+        self.K_tv_eq_grad = casadi.jacobian(self.K_tv_eq, self.lqr_eq_parameters)
+        self.K_tv_eq_grad_s = casadi.jacobian(self.K_tv_eq, self.S)
+
+        self.S_tv_eq_grad_fun = casadi.Function("S_tv_eq_grad", [self.A, self.B, self.cQ, self.cR, self.S], [self.S_tv_eq_grad])
+        self.K_tv_eq_grad_fun = casadi.Function("K_tv_eq_grad", [self.A, self.B, self.cR, self.S], [self.K_tv_eq_grad])
+
+        self.S_tv_eq_grad_s_fun = casadi.Function("S_tv_eq_grad_s", [self.A, self.B, self.cQ, self.cR, self.S], [self.S_tv_eq_grad_s])
+        self.K_tv_eq_grad_s_fun = casadi.Function("K_tv_eq_grad_s", [self.A, self.B, self.cR, self.S], [self.K_tv_eq_grad_s])
+
+        self.dS = casadi.SX.sym("dS", *A_shape)
+        self.dQ = casadi.SX.sym("dQ", *self.cQ.shape)
+        self.dR = casadi.SX.sym("dR", *self.cR.shape)
+        #dQ = casadi.SX.sym("dQ", *self.Q.shape)
+        self.dQ_fun = casadi.Function("dQ", [self.cQ], [casadi.jacobian(self.cQ @ self.cQ.T, self.lqr_eq_parameters)])
+        self.dR_fun = casadi.Function("dR", [self.cR], [casadi.jacobian(self.cR @ self.cR.T, self.lqr_eq_parameters)])
+
+        self.S_tv_eq_grad_p = self.dQ + self.A.T @ self.dS @ self.A - (self.A.T @ self.dS @ self.B @ casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.S @ self.A + self.A.T @ self.S @ self.B @ (-casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ (self.dR + self.B.T @ self.dS @ self.B) @ casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.S @ self.A) + self.A.T @ self.S @ self.B @ casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.dS @ self.A)
+        self.S_tv_eq_grad_p_fun = casadi.Function("S_tv_eq_grad_p", [self.A, self.B, self.cQ, self.dQ, self.cR, self.dR, self.S, self.dS], [self.S_tv_eq_grad_p])
+
+        self.K_tv_eq_grad_p = -casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ (self.dR + self.B.T @ self.dS @ self.B) @ casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.S @ self.A + casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.dS @ self.A
+        self.K_tv_eq_grad_p_fun = casadi.Function("K_tv_eq_grad_p", [self.A, self.B, self.cR, self.dR, self.S, self.dS], [self.K_tv_eq_grad_p])
+
         """
         #Non vec
         self.lqr_eq = casadi.vertcat(self.K_eq, self.S_eq)
@@ -128,9 +168,32 @@ class LQR:
         raise NotImplementedError
 
     def _grad_K(self):
-        dKS_dQR = self.dx_dy_fun(self.A_num, self.B_num, self.cQ_num, self.cR_num, self.S_num, self.K_num)
-        dK_dQR = dKS_dQR[-np.product(self.K.shape):, :]
-        return dK_dQR.toarray()
+        if isinstance(self.K_num, list):
+            dKs = []
+            dSs = []
+            for i in reversed(range(len(self.K_num))):
+                if i == len(self.K_num) - 1:
+                    dKS_dQR = self.dx_dy_fun(self.A_num[i], self.B_num[i], self.cQ_num, self.cR_num, self.S_num[i], self.K_num[i])
+                    dKs.append(dKS_dQR[-np.product(self.K.shape):, :].toarray())
+                    dSs.append(dKS_dQR[:-np.product(self.K.shape), :].toarray())
+                else:
+                    dQ = self.dQ_fun(self.cQ_num).toarray()
+                    dR = self.dR_fun(self.cR_num).toarray()
+                    dS = []
+                    dK = []
+                    for p_i in range(self.lqr_eq_parameters.shape[0]):
+                        dS_dp = self.S_tv_eq_grad_p_fun(self.A_num[i], self.B_num[i], self.cQ_num, dQ[:, p_i].reshape(*self.cQ.shape), self.cR_num, dR[:, p_i].reshape(*self.cR.shape), self.S_num[i+1], dSs[-1][:, p_i].reshape(*self.S.shape)).toarray()
+                        dS.append(dS_dp.ravel())
+                        dK_dp = self.K_tv_eq_grad_p_fun(self.A_num[i], self.B_num[i], self.cR_num, dR[:, p_i].reshape(*self.cR.shape), self.S_num[i], dS_dp).toarray()
+                        dK.append(dK_dp.ravel())
+                    dSs.append(np.array(dS).T)
+                    dKs.append(np.array(dK).T)
+            return np.array(dKs)
+        else:
+            dKS_dQR = self.dx_dy_fun(self.A_num, self.B_num, self.cQ_num, self.cR_num, self.S_num, self.K_num)
+            dK_dQR = dKS_dQR[-np.product(self.K.shape):, :]
+            return dK_dQR.toarray()
+
         """  # Matrix version
         dKS_dQ = self.m_dx_dQ_fun(self.A_num, self.B_num, self.Q_num, self.R_num, self.S_num, self.K_num)
         dKS_dR = self.m_dx_dR_fun(self.A_num, self.B_num, self.Q_num, self.R_num, self.S_num, self.K_num)
@@ -162,23 +225,43 @@ class LQR:
 
         # ref Bertsekas, p.151
         try:
-            # first, try to solve the ricatti equation
             Q_num = self.cQ_num @ self.cQ_num.T
             R_num = self.cR_num @ self.cR_num.T
-            S = np.matrix(scipy.linalg.solve_discrete_are(self.A_num, self.B_num, Q_num, R_num))
-            self.S_num = S.A
 
-            # compute the LQR gain
-            #self.K = np.matrix(scipy.linalg.inv(np.atleast_2d(self.R)) * (self.B.T * self.S))
-            self.K_num = np.matrix(scipy.linalg.inv(np.atleast_2d(self.B_num.T @ S @ self.B_num + R_num)) @ (self.B_num.T @ S @ self.A_num)).A
+            if isinstance(self.A_num, list):
+                assert isinstance(self.B_num, list) and len(self.A_num) == len(self.B_num)
+                S_num, K_num = [], []
+                for i in reversed(range(len(self.A_num))):
+                    if i == len(self.A_num) - 1:
+                        S_num.append(np.matrix(scipy.linalg.solve_discrete_are(self.A_num[i], self.B_num[i], Q_num, R_num)))
+                    else:
+                        S_num.append(Q_num + self.A_num[i].T @ S_num[-1] @ self.A_num[i] - self.A_num[i].T @ S_num[-1] @ self.B_num[
+                            i] @ scipy.linalg.inv(R_num + self.B_num[i].T @ S_num[-1] @ self.B_num[i]) @ self.B_num[i].T @ S_num[
+                                          -1] @ self.A_num[i])
+                    K_num.append(self._calculate_gain_matrix(self.A_num[i], self.B_num[i], R_num, S_num[-1]))
 
-            self.E, eigVecs = scipy.linalg.eig(self.A_num - self.B_num @ self.K_num)
+                self.S_num = list(reversed(S_num))
+                self.K_num = list(reversed(K_num))
+
+            else:
+                # first, try to solve the ricatti equation
+                S = np.matrix(scipy.linalg.solve_discrete_are(self.A_num, self.B_num, Q_num, R_num))
+                self.S_num = S.A
+
+                # compute the LQR gain
+                #self.K = np.matrix(scipy.linalg.inv(np.atleast_2d(self.R)) * (self.B.T * self.S))
+                self.K_num = np.matrix(scipy.linalg.inv(np.atleast_2d(self.B_num.T @ S @ self.B_num + R_num)) @ (self.B_num.T @ S @ self.A_num)).A
+
+                self.E, eigVecs = scipy.linalg.eig(self.A_num - self.B_num @ self.K_num)
         except np.linalg.LinAlgError as e:
             print("LinalgError for system:")
             for comp_name in ["A", "B", "cQ", "cR"]:
                 print(comp_name)
                 print(getattr(self, "{}_num".format(comp_name)))
             raise e
+
+    def _calculate_gain_matrix(self, A, B, R, S):
+        return np.matrix(scipy.linalg.inv(np.atleast_2d(B.T @ S @ B + R)) @ B.T @ S @ A)
 
     @property
     def weights_size(self):
@@ -240,6 +323,64 @@ class LQR:
                     continue
             weight_names.append(w_n)
         return weight_names
+
+
+def gradient_check_tv(system, print_mode, n=5, h=5, eps=1e-4, tolerance=1e-6, seed=None):
+    import copy
+    def perturb_weight(_A, _B, _Q, _R, idx, _eps=1e-4):
+        def print_results(K_p, K_n, _grad, name, t):
+            num_grad = (K_p - K_n) / (2 * _eps)
+            _grad = _grad.reshape(*num_grad.shape, order="F")
+            is_close = np.isclose(_grad, num_grad, atol=tolerance)
+            if print_mode == "all" or (print_mode == "failure" and not np.all(is_close)):
+                print("{} (t = {})".format(name, t))
+                print("np.isclose: \n{}".format(is_close))
+                print("(K_p - K_n) / 2eps = \n{}".format(num_grad))
+                print("Grad = \n{}".format(_grad))
+                print("Diff: \n{}".format(num_grad - _grad))
+                print("-" * 30)
+        pi = LQR(_A, _B, _Q, _R)
+        grad = pi._grad_K()
+        ws = np.copy(pi.get_weights())
+        ws[idx] += eps
+        pi.set_weights(ws)
+        Kp = np.copy(pi.K_num)
+        ws[idx] -= 2*eps
+        pi.set_weights(ws)
+        Kn = np.copy(pi.K_num)
+        w_names = pi.get_weight_names()
+        for t in reversed(range(len(Kp))):
+            print_results(Kp[t], Kn[t], grad[-(t+1), :, idx], w_names[idx], t)
+
+    assert print_mode in ["all", "failure"]
+    pi = LQR(**system)
+
+    if seed is not None:
+        np.random.seed(seed)
+
+    if not isinstance(system["A"], list):
+        system["A"] = [system["A"] + np.random.uniform(-0.5, 0.5, size=system["A"].shape) for _ in range(h)]
+        system["B"] = [system["B"] + np.random.uniform(-0.5, 0.5, size=system["B"].shape) for _ in range(h)]
+
+    for n_i in range(n):
+        success = False
+        while not success:
+            try:
+                _system = copy.deepcopy(system)
+                rand_comp = np.random.choice(["A", "B", "Q", "R"])
+                _system[rand_comp] = np.random.uniform(-3, 3, size=_system[rand_comp].shape if not isinstance(_system[rand_comp], list) else _system[rand_comp][0].shape)
+                if rand_comp in ["Q", "R"]:
+                    _system[rand_comp] = (_system[rand_comp] + _system[rand_comp].T) / 2
+                    if np.any(np.linalg.eigvals(np.atleast_2d(_system[rand_comp])) < 0):
+                        raise np.linalg.LinAlgError
+                elif rand_comp in ["A", "B"]:
+                    _system[rand_comp] = [_system[rand_comp] + np.random.uniform(-0.5, 0.5,  size=_system[rand_comp][0].shape) for _ in range(h)]
+                pi.set_numeric_value(_system)
+                for w_i in range(pi.weights_size):
+                    perturb_weight(*_system.values(), w_i, _eps=eps)
+                success = True
+            except np.linalg.LinAlgError as e:
+                pass
 
 
 def gradient_check(system, print_mode, n=5, eps=1e-4, tolerance=1e-6, seed=None):
@@ -320,12 +461,12 @@ if __name__ == "__main__":  # TODO: fix bug where R bigger than dim 1 doesnt wor
             "R": np.array([[1.0, 1.2], [1.2, 2.5]], dtype=np.float32)
         }
     }
-    lqr = LQR(**test_cases["2x1"])
-    lqr.set_weights(np.arange(lqr.weights_size))
+    #lqr = LQR(**test_cases["2x1"])
+    #lqr.set_weights(np.arange(lqr.weights_size))
     #lqr.set_weights(np.arange(4))
     #print(lqr.get_weight_names())
     #pi = LQR(A, B, Q, R)
-    gradient_check(test_cases["4x1"], "all", n=1, tolerance=1e-3)
+    gradient_check_tv(test_cases["2x1"], "failure", n=10, h=10, tolerance=1e-4)
     print("hei")
-    lqr._grad_K()
+    #lqr._grad_K()
 
