@@ -10,6 +10,9 @@ class RunningMeanStd(object):
         :param epsilon: (float) helps with arithmetic issues
         :param shape: (tuple) the shape of the data stream's output
         """
+        if len(shape) > 1:
+            print("WARNING: CALLED RUNNIGMEANSTD WITH SHAPE WITH 2 OR MORE DIMENSIONS, WILL ONLY USE LAST DIMENSION")
+            shape = shape[-1]
         self.mean = np.zeros(shape, 'float64')
         self.var = np.ones(shape, 'float64')
         self.count = epsilon
@@ -26,10 +29,10 @@ class RunningMeanStd(object):
             else:
                 arr = np.concatenate(self.buf)
                 self.buf = []
-        batch_mean = np.mean(arr, axis=0)
+        batch_mean = np.mean(arr, axis=tuple((i for i in range(len(arr.shape) - 1))))
         if self.mean_mask is not None:
-            batch_mean[self.mean_mask] = 0
-        batch_var = np.var(arr, axis=0)
+            batch_mean[..., self.mean_mask] = 0
+        batch_var = np.var(arr, axis=tuple((i for i in range(len(arr.shape) - 1))))
         if self.var_mask is not None:
             batch_var[self.var_mask] = 1
         batch_count = arr.shape[0]
