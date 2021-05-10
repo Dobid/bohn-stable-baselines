@@ -25,7 +25,7 @@ class VecNormalize(VecEnvWrapper):
     :param epsilon: (float) To avoid division by zero
     """
 
-    def __init__(self, venv, training=True, norm_obs=True, norm_reward=True,
+    def __init__(self, venv, training=True, norm_obs=True, norm_reward=False,
                  clip_obs=10., clip_reward=10., gamma=0.99, epsilon=1e-8, mean_mask=None, var_mask=None):
         VecEnvWrapper.__init__(self, venv)
         if venv.num_envs == 1:
