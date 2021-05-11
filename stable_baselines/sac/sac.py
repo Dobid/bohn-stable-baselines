@@ -765,3 +765,9 @@ class SAC(OffPolicyRLModel):
             inputs = np.expand_dims(inputs, axis=0)
 
         qf1, qf2 = self.sess.run([self.policy_tf.qf1, self.policy_tf.qf2], feed_dict={self.observations_ph: np.expand_dims(inputs, axis=0)})
+
+    def export(self, export_path):
+        with self.graph.as_default():
+            tf.saved_model.simple_save(self.sess, export_path, inputs={"obs": self.policy_tf.obs_ph},
+                                       outputs={"action": self.policy_tf.deterministic_policy})
+            print("Exported model to {}".format(export_path))
