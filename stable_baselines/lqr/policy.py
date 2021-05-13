@@ -153,28 +153,27 @@ class LQR:
         """
         raise NotImplementedError
 
+
     def _grad_K(self):
         if isinstance(self.A_num, list) or (isinstance(self.A_num, np.ndarray) and len(self.A_num.shape) == 3):
             dKs = []
             dSs = []
+
+            dQ = self.dQ_fun(self.cQ_num).toarray().T.reshape(self.weights_size, *self.cQ.shape)
+            dR = self.dR_fun(self.cR_num).toarray().T.reshape(self.weights_size, *self.cR.shape)
             for i in reversed(range(len(self.K_num))):
                 if i == len(self.K_num) - 1:
                     dKS_dQR = self.dx_dy_fun(self.A_num[i], self.B_num[i], self.cQ_num, self.cR_num, self.S_num[i], self.K_num[i])
-                    dKs.append(dKS_dQR[-np.product(self.K.shape):, :].toarray())
-                    dSs.append(dKS_dQR[:-np.product(self.K.shape), :].toarray())
+                    dKs.append(dKS_dQR[-np.product(self.K.shape):, :].toarray().T.reshape(self.weights_size, *self.K.shape))
+                    dSs.append(dKS_dQR[:-np.product(self.K.shape), :].toarray().T.reshape(self.weights_size, *self.S.shape))
                 else:
-                    dQ = self.dQ_fun(self.cQ_num).toarray()
-                    dR = self.dR_fun(self.cR_num).toarray()
-                    dS = []
-                    dK = []
-                    for p_i in range(self.lqr_eq_parameters.shape[0]):
-                        dS_dp = self.S_tv_eq_grad_p_fun(self.A_num[i], self.B_num[i], self.cQ_num, dQ[:, p_i].reshape(*self.cQ.shape), self.cR_num, dR[:, p_i].reshape(*self.cR.shape), self.S_num[i+1], dSs[-1][:, p_i].reshape(*self.S.shape)).toarray()
-                        dS.append(dS_dp.ravel())
-                        dK_dp = self.K_tv_eq_grad_p_fun(self.A_num[i], self.B_num[i], self.cR_num, dR[:, p_i].reshape(*self.cR.shape), self.S_num[i], dS_dp).toarray()
-                        dK.append(dK_dp.ravel())
-                    dSs.append(np.array(dS).T)
-                    dKs.append(np.array(dK).T)
-            return np.array(dKs).reshape((len(self.A_num), *self.K.shape, self.weights_size))
+                    dS = dQ + self.A_num[i].T @ dSs[-1] @ self.A_num[i] - (self.A_num[i].T @ dSs[-1] @ self.B_num[i] @ np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i+1] @ self.B_num[i]) @ self.B_num[i].T @ self.S_num[i+1] @ self.A_num[i] + self.A_num[i].T @ self.S_num[i+1] @ self.B_num[i] @ (-np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i+1] @ self.B_num[i]) @ (dR + self.B_num[i].T @ dSs[-1] @ self.B_num[i]) @ np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i+1] @ self.B_num[i]) @ self.B_num[i].T @ self.S_num[i+1] @ self.A_num[i]) + self.A_num[i].T @ self.S_num[i+1] @ self.B_num[i] @ np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i+1] @ self.B_num[i]) @ self.B_num[i].T @ dSs[-1] @ self.A_num[i])
+                    dK = -np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i] @ self.B_num[i]) @ (dR + self.B_num[i].T @ dS @ self.B_num[i]) @ np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i] @ self.B_num[i]) @ self.B_num[i].T @ self.S_num[i] @ self.A_num[i] + np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i] @ self.B_num[i]) @ self.B_num[i].T @ dS @ self.A_num[i]
+
+                    dSs.append(dS)
+                    dKs.append(dK)
+
+            return np.array(dKs).transpose((0, 2, 3, 1))
         else:
             dKS_dQR = self.dx_dy_fun(self.A_num, self.B_num, self.cQ_num, self.cR_num, self.S_num, self.K_num)
             dK_dQR = dKS_dQR[-np.product(self.K.shape):, :]
