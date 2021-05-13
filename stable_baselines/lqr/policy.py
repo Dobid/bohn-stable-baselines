@@ -83,7 +83,7 @@ class LQR:
         self.dR_fun = casadi.Function("dR", [self.cR], [casadi.jacobian(self.cR @ self.cR.T, self.lqr_eq_parameters)])
 
         self.S_tv_eq_grad_p = self.dQ + self.A.T @ self.dS @ self.A - (self.A.T @ self.dS @ self.B @ casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.S @ self.A + self.A.T @ self.S @ self.B @ (-casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ (self.dR + self.B.T @ self.dS @ self.B) @ casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.S @ self.A) + self.A.T @ self.S @ self.B @ casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.dS @ self.A)
-        self.S_tv_eq_grad_p_fun = casadi.Function("S_tv_eq_grad_p", [self.A, self.B, self.cQ, self.dQ, self.cR, self.dR, self.S, self.dS], [self.S_tv_eq_grad_p])
+        self.S_tv_eq_grad_p_fun = casadi.Function("S_tv_eq_grad_p", [self.A, self.B, self.dQ, self.cR, self.dR, self.S, self.dS], [self.S_tv_eq_grad_p])
 
         self.K_tv_eq_grad_p = -casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ (self.dR + self.B.T @ self.dS @ self.B) @ casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.S @ self.A + casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.dS @ self.A
         self.K_tv_eq_grad_p_fun = casadi.Function("K_tv_eq_grad_p", [self.A, self.B, self.cR, self.dR, self.S, self.dS], [self.K_tv_eq_grad_p])
@@ -175,7 +175,7 @@ class LQR:
             return get_time_varying_grads(dKs, dSs, dQ, dR, np.array(self.A_num), np.array(self.B_num), self.cR_num.astype(np.float64), self.S_num).transpose((0, 2, 3, 1))
             #np.array(dKs).transpose((0, 2, 3, 1))
         else:
-            dKS_dQR = self.dx_dy_fun(self.A_num, self.B_num, self.cQ_num, self.cR_num, self.S_num, self.K_num)
+            dKS_dQR = self.dx_dy_fun(self.A_num, self.B_num, self.cQ_num, np.expand_dims(self.cR_num, axis=-1), self.S_num, self.K_num)
             dK_dQR = dKS_dQR[-np.product(self.K.shape):, :]
             return dK_dQR.toarray().reshape(*self.K.shape, self.weights_size)
 
