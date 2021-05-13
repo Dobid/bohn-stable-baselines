@@ -152,28 +152,25 @@ class LQR:
 
 
     def _grad_K(self):
-        @numba.jit("float64[:,:,:,:](float64[:,:,:,:], float64[:,:,:,:], float64[:,:,:], float64[:,:,:], float64[:,:,:], float64[:,:,:], float64[:,:], float64[:,:,:])", nopython=True, nogil=True, cache=True)
-        def get_time_varying_grads(dKs, dSs, dQ, dR, A_num, B_num, cR_num, S_num):
-            for i in range(len(S_num) - 2, -1, -1):
-                for p_i in numba.prange(dKs.shape[1]):
-                    dSs[i, p_i] = dQ[p_i] + A_num[i].T @ dSs[i+1][p_i] @ A_num[i] - (A_num[i].T @ dSs[i+1][p_i] @ B_num[i] @ np.linalg.inv(cR_num @ cR_num.T + B_num[i].T @ S_num[i + 1] @ B_num[i]) @ B_num[i].T @ S_num[i + 1] @ A_num[i] + A_num[i].T @ S_num[i + 1] @ B_num[i] @ (-np.linalg.inv(cR_num @ cR_num.T + B_num[i].T @ S_num[i + 1] @ B_num[i]) @ (dR[p_i] + B_num[i].T @ dSs[i+1][p_i] @ B_num[i]) @ np.linalg.inv(cR_num @ cR_num.T + B_num[i].T @ S_num[i + 1] @ B_num[i]) @ B_num[i].T @ S_num[i + 1] @ A_num[i]) + A_num[i].T @ S_num[i + 1] @ B_num[i] @ np.linalg.inv(cR_num @ cR_num.T + B_num[i].T @ S_num[i + 1] @ B_num[i]) @ B_num[i].T @ dSs[i+1][p_i] @ A_num[i])
-                    dKs[i, p_i] = -np.linalg.inv(cR_num @ cR_num.T + B_num[i].T @ S_num[i] @ B_num[i]) @ (dR[p_i] + B_num[i].T @ dSs[i, p_i] @ B_num[i]) @ np.linalg.inv(cR_num @ cR_num.T + B_num[i].T @ S_num[i] @ B_num[i]) @ B_num[i].T @ S_num[i] @ A_num[i] + np.linalg.inv(cR_num @ cR_num.T + B_num[i].T @ S_num[i] @ B_num[i]) @ B_num[i].T @ dSs[i, p_i] @ A_num[i]
-
-            return dKs
-
         if isinstance(self.A_num, list) or (isinstance(self.A_num, np.ndarray) and len(self.A_num.shape) == 3):
+            dKs = []
+            dSs = []
+
             dQ = self.dQ_fun(self.cQ_num).toarray().T.reshape(self.weights_size, *self.cQ.shape)
             dR = self.dR_fun(self.cR_num).toarray().T.reshape(self.weights_size, *self.cR.shape)
+            for i in reversed(range(len(self.K_num))):
+                if i == len(self.K_num) - 1:
+                    dKS_dQR = self.dx_dy_fun(self.A_num[i], self.B_num[i], self.cQ_num, self.cR_num, self.S_num[i], self.K_num[i])
+                    dKs.append(dKS_dQR[-np.product(self.K.shape):, :].toarray().T.reshape(self.weights_size, *self.K.shape))
+                    dSs.append(dKS_dQR[:-np.product(self.K.shape), :].toarray().T.reshape(self.weights_size, *self.S.shape))
+                else:
+                    dS = dQ + self.A_num[i].T @ dSs[-1] @ self.A_num[i] - (self.A_num[i].T @ dSs[-1] @ self.B_num[i] @ np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i+1] @ self.B_num[i]) @ self.B_num[i].T @ self.S_num[i+1] @ self.A_num[i] + self.A_num[i].T @ self.S_num[i+1] @ self.B_num[i] @ (-np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i+1] @ self.B_num[i]) @ (dR + self.B_num[i].T @ dSs[-1] @ self.B_num[i]) @ np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i+1] @ self.B_num[i]) @ self.B_num[i].T @ self.S_num[i+1] @ self.A_num[i]) + self.A_num[i].T @ self.S_num[i+1] @ self.B_num[i] @ np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i+1] @ self.B_num[i]) @ self.B_num[i].T @ dSs[-1] @ self.A_num[i])
+                    dK = -np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i] @ self.B_num[i]) @ (dR + self.B_num[i].T @ dS @ self.B_num[i]) @ np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i] @ self.B_num[i]) @ self.B_num[i].T @ self.S_num[i] @ self.A_num[i] + np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i] @ self.B_num[i]) @ self.B_num[i].T @ dS @ self.A_num[i]
 
-            dKS_dQR = self.dx_dy_fun(self.A_num[-1], self.B_num[-1], self.cQ_num, self.cR_num, self.S_num[-1], self.K_num[-1])
+                    dSs.append(dS)
+                    dKs.append(dK)
 
-            dKs = np.empty((len(self.A_num), self.weights_size, *self.K.shape), dtype=np.float64)
-            dSs = np.empty((len(self.A_num), self.weights_size, *self.S.shape), dtype=np.float64)
-            dKs[-1] = dKS_dQR[-np.product(self.K.shape):, :].toarray().T.reshape(self.weights_size, *self.K.shape)
-            dSs[-1] = dKS_dQR[:-np.product(self.K.shape), :].toarray().T.reshape(self.weights_size, *self.S.shape)
-
-            return get_time_varying_grads(dKs, dSs, dQ, dR, np.array(self.A_num), np.array(self.B_num), self.cR_num.astype(np.float64), self.S_num).transpose((0, 2, 3, 1))
-            #np.array(dKs).transpose((0, 2, 3, 1))
+            return np.array(dKs).transpose((0, 2, 3, 1))
         else:
             dKS_dQR = self.dx_dy_fun(self.A_num, self.B_num, self.cQ_num, np.expand_dims(self.cR_num, axis=-1), self.S_num, self.K_num)
             dK_dQR = dKS_dQR[-np.product(self.K.shape):, :]
