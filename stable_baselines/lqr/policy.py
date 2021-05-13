@@ -18,22 +18,19 @@ class LQR:
         self.A_num = A
         self.B = casadi.SX.sym("B", *B_shape)
         self.B_num = B
+
         self.cQ = casadi.SX.sym("Q", *A_shape)
-        if len(Q.shape) > 1:
-            try:
-                self.cQ_num = np.linalg.cholesky(Q)
-            except np.linalg.LinAlgError:
-                self.cQ_num = np.linalg.cholesky(Q + self.eps * np.eye(Q.shape[0]))  # If still fails, notify user
-        else:
-            self.cQ_num = np.sqrt(Q)
+        try:
+            self.cQ_num = np.linalg.cholesky(np.atleast_2d(Q).astype(np.float64))
+        except np.linalg.LinAlgError:
+            self.cQ_num = np.linalg.cholesky(np.atleast_2d(Q).astype(np.float64) + self.eps * np.eye(Q.shape[0]))  # If still fails, notify user
+
         self.cR = casadi.SX.sym("R", B_shape[1], B_shape[1])
-        if len(R.shape) > 1:
-            try:
-                self.cR_num = np.linalg.cholesky(R)
-            except np.linalg.LinAlgError:
-                self.cR_num = np.linalg.cholesky(R + self.eps * np.eye(R.shape[0]))
-        else:
-            self.cR_num = np.sqrt(R)
+        try:
+            self.cR_num = np.linalg.cholesky(np.atleast_2d(R).astype(np.float64))
+        except np.linalg.LinAlgError:
+            self.cR_num = np.linalg.cholesky(np.atleast_2d(R).astype(np.float64) + self.eps * np.eye(R.shape[0]))
+
         self.K = casadi.SX.sym("K", B_shape[1], A_shape[1])
         self.K_num = None
         self.S = casadi.SX.sym("S", *A_shape)
