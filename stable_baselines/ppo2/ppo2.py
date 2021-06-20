@@ -388,13 +388,29 @@ class PPO2(ActorCriticRLModel):
                                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
                                 if hasattr(self.train_model, "mpc_action_ph") and False:
                                     self.train_model.mpc_actions_mb = self.train_model.mpc_actions[mbinds]
+                                if getattr(self.train_model, "time_varying", False):
+                                    self.train_model.lqr.set_weights(self.sess.run(self.train_model.lqr_weights))
+                                    Ks, grad_Ks = [], []
+                                    system_Ks, system_gradKs = {}, {}
+                                    for b_i in range(batch_size):  # TODO: can probably get better performance if check if calculation has been done for this A and B sequence before (e.g. subsequent timesteps with no recomputation).
+                                        if not self.train_model.lqr_system_idxs[mbinds[b_i]] in system_Ks:
+                                            self.train_model.lqr.set_numeric_value({"A": self.train_model.lqr_As[self.train_model.lqr_system_idxs[mbinds[b_i]]],
+                                                                                    "B": self.train_model.lqr_Bs[self.train_model.lqr_system_idxs[mbinds[b_i]]]})
+                                            system_Ks[self.train_model.lqr_system_idxs[mbinds[b_i]]] = np.copy(self.train_model.lqr.K_num)
+                                            system_gradKs[self.train_model.lqr_system_idxs[mbinds[b_i]]] = np.copy(self.train_model.lqr._grad_K())
+                                        b_i_k = obs[mbinds][b_i][-5].astype(np.int32)
+                                        Ks.append(system_Ks[self.train_model.lqr_system_idxs[mbinds[b_i]]][b_i_k])
+                                        grad_Ks.append(system_gradKs[self.train_model.lqr_system_idxs[mbinds[b_i]]][b_i_k])
+                                    self.train_model.lqr_Ks = np.array(Ks)
+                                    self.train_model.lqr_K_grads = np.transpose(np.array(grad_Ks), axes=[0, 3, 1, 2])
+                                    #self.sess.run([self.train_model.lqr_K_var.assign(Ks), self.train_model.lqr_K_grad_var.assign(grad_Ks)])
+
                                 mb_loss_vals.append(self._train_step(lr_now, cliprange_now, ent_coef_now, *slices, writer=writer,
                                                                      update=timestep, cliprange_vf=cliprange_vf_now))
-                                if hasattr(self.train_model, "lqr_output"):
-                                    lqr_weights = self.sess.run(self.train_model.lqr_weights)
-                                    self.train_model.lqr.set_weights(lqr_weights)
-                                    K_num, K_grad = self.train_model.lqr.K_num, self.train_model.lqr._grad_K()
-                                    self.sess.run([self.train_model.lqr_K_var.assign(K_num), self.train_model.lqr_K_grad_var.assign(K_grad)])
+                                if hasattr(self.train_model, "lqr_output") and not getattr(self.train_model, "time_varying", False):
+                                    self.train_model.lqr.set_weights(self.sess.run(self.train_model.lqr_weights))
+                                    #K_num, K_grad = self.train_model.lqr.K_num, self.train_model.lqr._grad_K()
+                                    #self.sess.run([self.train_model.lqr_K_var.assign(K_num), self.train_model.lqr_K_grad_var.assign(K_grad)])
                                 if self.target_kl is not None and mb_loss_vals[-1][-2] > self.target_kl:
                                     raise KLDivergenceException
                     except KLDivergenceException:
