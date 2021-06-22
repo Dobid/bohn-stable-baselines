@@ -4,36 +4,35 @@ import casadi
 
 
 class LQR:
-    def __init__(self, A, B, Q, R, weights=None, input_shape=None, output_shape=(1,), eps=1e-8, **kwargs):
+    def __init__(self, A, B, Q, R, time_varying, weights=None, input_shape=None, output_shape=(1,), eps=1e-8, **kwargs):
         self.E = None  # eigenvalues
         self.eps = eps
+        self.time_varying = time_varying
+        A = self._numpyify(A)
+        B = self._numpyify(B)
+        Q = self._numpyify(Q)
+        R = self._numpyify(R)
 
-        if isinstance(A, list):
-            A_shape = A[0].shape
-            B_shape = B[0].shape
-        else:
-            A_shape = A.shape
-            B_shape = B.shape
-        self.A = casadi.SX.sym("A", *A_shape)
+        self.A = casadi.SX.sym("A", *A.shape[-2:])
         self.A_num = A
-        self.B = casadi.SX.sym("B", *B_shape)
+        self.B = casadi.SX.sym("B", *B.shape[-2:])
         self.B_num = B
 
-        self.cQ = casadi.SX.sym("Q", *A_shape)
+        self.cQ = casadi.SX.sym("Q", *A.shape[-2:])
         try:
             self.cQ_num = np.linalg.cholesky(np.atleast_2d(Q).astype(np.float64))
         except np.linalg.LinAlgError:
             self.cQ_num = np.linalg.cholesky(np.atleast_2d(Q).astype(np.float64) + self.eps * np.eye(Q.shape[0]))  # If still fails, notify user
 
-        self.cR = casadi.SX.sym("R", B_shape[1], B_shape[1])
+        self.cR = casadi.SX.sym("R", B.shape[-1], B.shape[-1])
         try:
             self.cR_num = np.linalg.cholesky(np.atleast_2d(R).astype(np.float64))
         except np.linalg.LinAlgError:
             self.cR_num = np.linalg.cholesky(np.atleast_2d(R).astype(np.float64) + self.eps * np.eye(R.shape[0]))
 
-        self.K = casadi.SX.sym("K", B_shape[1], A_shape[1])
+        self.K = casadi.SX.sym("K", B.shape[-1], A.shape[-1])
         self.K_num = None
-        self.S = casadi.SX.sym("S", *A_shape)
+        self.S = casadi.SX.sym("S", *A.shape[-2:])
         self.S_num = None
         self._compute_lqr()
         self.S_eq = self.A.T @ self.S @ self.A - self.S - self.A.T @ self.S @ self.B @ self.K + self.cQ @ self.cQ.T
@@ -74,19 +73,11 @@ class LQR:
         #self._add_save_attr(_w='numpy')
 
         # Time-Varying Derivatives
-        #tv_params = casadi.vertcat(self.lqr_eq_parameters, casadi.reshape(self.S, -1, 1))
-        self.dS = casadi.SX.sym("dS", *A_shape)
         self.dQ = casadi.SX.sym("dQ", *self.cQ.shape)
         self.dR = casadi.SX.sym("dR", *self.cR.shape)
 
         self.dQ_fun = casadi.Function("dQ", [self.cQ], [casadi.jacobian(self.cQ @ self.cQ.T, self.lqr_eq_parameters)])
         self.dR_fun = casadi.Function("dR", [self.cR], [casadi.jacobian(self.cR @ self.cR.T, self.lqr_eq_parameters)])
-
-        self.S_tv_eq_grad_p = self.dQ + self.A.T @ self.dS @ self.A - (self.A.T @ self.dS @ self.B @ casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.S @ self.A + self.A.T @ self.S @ self.B @ (-casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ (self.dR + self.B.T @ self.dS @ self.B) @ casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.S @ self.A) + self.A.T @ self.S @ self.B @ casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.dS @ self.A)
-        self.S_tv_eq_grad_p_fun = casadi.Function("S_tv_eq_grad_p", [self.A, self.B, self.dQ, self.cR, self.dR, self.S, self.dS], [self.S_tv_eq_grad_p])
-
-        self.K_tv_eq_grad_p = -casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ (self.dR + self.B.T @ self.dS @ self.B) @ casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.S @ self.A + casadi.inv(self.cR @ self.cR.T + self.B.T @ self.S @ self.B) @ self.B.T @ self.dS @ self.A
-        self.K_tv_eq_grad_p_fun = casadi.Function("K_tv_eq_grad_p", [self.A, self.B, self.cR, self.dR, self.S, self.dS], [self.K_tv_eq_grad_p])
 
         """
         #Non vec
@@ -101,9 +92,18 @@ class LQR:
         self.m_dx_dR_fun = casadi.Function("LQRm_grad", [self.A, self.B, self.Q, self.R, self.S, self.K], [self.m_dx_dR])
         """
 
-    def set_numeric_value(self, components):
+    def _numpyify(self, m):
+        if isinstance(m, list):
+            return np.array(m)
+        else:
+            return m
+
+    def set_numeric_value(self, components, indices=None):
         assert isinstance(components, dict)
+        if isinstance(indices, int):
+            indices = [indices]
         for k, v in components.items():
+            v = self._numpyify(v)
             if k in ["Q", "R"]:
                 k = "c" + k
                 if len(v.shape) > 1:
@@ -114,7 +114,10 @@ class LQR:
                 else:
                     v = np.sqrt(v)
             assert hasattr(self, k)
-            setattr(self, "{}_num".format(k), v)
+            if indices is None:
+                setattr(self, "{}_num".format(k), v)
+            else:
+                getattr(self, "{}_num".format(k))[indices] = v
         self._compute_lqr()
 
     def get_numeric_value(self, component_name):
@@ -151,28 +154,54 @@ class LQR:
         raise NotImplementedError
 
 
-    def _grad_K(self):
-        if isinstance(self.A_num, list) or (isinstance(self.A_num, np.ndarray) and len(self.A_num.shape) == 3):
+    def _grad_K(self):  # TODO: probably need some time-varying argument to class
+        if self.time_varying:
             dKs = []
             dSs = []
 
             dQ = self.dQ_fun(self.cQ_num).toarray().T.reshape(self.weights_size, *self.cQ.shape)
             dR = self.dR_fun(self.cR_num).toarray().T.reshape(self.weights_size, *self.cR.shape)
-            for i in reversed(range(len(self.K_num))):
-                if i == len(self.K_num) - 1:
-                    dKS_dQR = self.dx_dy_fun(self.A_num[i], self.B_num[i], self.cQ_num, self.cR_num, self.S_num[i], self.K_num[i])
-                    dKs.append(dKS_dQR[-np.product(self.K.shape):, :].toarray().T.reshape(self.weights_size, *self.K.shape))
-                    dSs.append(dKS_dQR[:-np.product(self.K.shape), :].toarray().T.reshape(self.weights_size, *self.S.shape))
+            for i in reversed(range(self.K_num.shape[-3])):
+                if i == self.K_num.shape[-3] - 1:
+                    if len(self.K_num.shape) == 4:
+                        for s_i in range(self.K_num.shape[0]):
+                            dKS_dQR = self.dx_dy_fun(self.A_num[s_i, -1], self.B_num[s_i, -1], self.cQ_num, self.cR_num, self.S_num[s_i, -1], self.K_num[s_i, -1])
+                            dKs.append(dKS_dQR[-np.product(self.K.shape):, :].toarray().T.reshape(self.weights_size, *self.K.shape))
+                            dSs.append(dKS_dQR[:-np.product(self.K.shape), :].toarray().T.reshape(self.weights_size, *self.S.shape))
+                        dKs = [np.array(dKs).swapaxes(0, 1)]
+                        dSs = [np.array(dSs).swapaxes(0, 1)]
+                        dQ = np.repeat(dQ[:, np.newaxis, ...], self.A_num.shape[0], axis=1)
+                        dR = np.repeat(dR[:, np.newaxis, ...], self.A_num.shape[0], axis=1)
+                    else:
+                        dKS_dQR = self.dx_dy_fun(self.A_num[i], self.B_num[i], self.cQ_num, self.cR_num, self.S_num[i], self.K_num[i])
+                        dKs.append(dKS_dQR[-np.product(self.K.shape):, :].toarray().T.reshape(self.weights_size, *self.K.shape))
+                        dSs.append(dKS_dQR[:-np.product(self.K.shape), :].toarray().T.reshape(self.weights_size, *self.S.shape))
                 else:
-                    dS = dQ + self.A_num[i].T @ dSs[-1] @ self.A_num[i] - (self.A_num[i].T @ dSs[-1] @ self.B_num[i] @ np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i+1] @ self.B_num[i]) @ self.B_num[i].T @ self.S_num[i+1] @ self.A_num[i] + self.A_num[i].T @ self.S_num[i+1] @ self.B_num[i] @ (-np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i+1] @ self.B_num[i]) @ (dR + self.B_num[i].T @ dSs[-1] @ self.B_num[i]) @ np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i+1] @ self.B_num[i]) @ self.B_num[i].T @ self.S_num[i+1] @ self.A_num[i]) + self.A_num[i].T @ self.S_num[i+1] @ self.B_num[i] @ np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i+1] @ self.B_num[i]) @ self.B_num[i].T @ dSs[-1] @ self.A_num[i])
-                    dK = -np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i] @ self.B_num[i]) @ (dR + self.B_num[i].T @ dS @ self.B_num[i]) @ np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i] @ self.B_num[i]) @ self.B_num[i].T @ self.S_num[i] @ self.A_num[i] + np.linalg.inv(self.cR_num @ self.cR_num.T + self.B_num[i].T @ self.S_num[i] @ self.B_num[i]) @ self.B_num[i].T @ dS @ self.A_num[i]
+                    if len(self.A_num.shape) == 4:
+                        Ai = self.A_num[:, i, :, :]
+                        Bi = self.B_num[:, i, :, :]
+                        AiT = np.transpose(Ai, (0, 2, 1))
+                        BiT = np.transpose(Bi, (0, 2, 1))
+                        S_ip1 = self.S_num[:, i+1, :, :]
+                        S_i = self.S_num[:, i, :, :]
+                    else:
+                        Ai = self.A_num[i]
+                        Bi = self.B_num[i]
+                        AiT = Ai.T
+                        BiT = Bi.T
+                        S_ip1 = self.S_num[i+1]
+                        S_i = self.S_num[i]
+                    dS = dQ + AiT @ dSs[-1] @ Ai - (AiT @ dSs[-1] @ Bi @ np.linalg.inv(self.cR_num @ self.cR_num.T + BiT @ S_ip1 @ Bi) @ BiT @ S_ip1 @ Ai + AiT @ S_ip1 @ Bi @ (-np.linalg.inv(self.cR_num @ self.cR_num.T + BiT @ S_ip1 @ Bi) @ (dR + BiT @ dSs[-1] @ Bi) @ np.linalg.inv(self.cR_num @ self.cR_num.T + BiT @ S_ip1 @ Bi) @ BiT @ S_ip1 @ Ai) + AiT @ S_ip1 @ Bi @ np.linalg.inv(self.cR_num @ self.cR_num.T + BiT @ S_ip1 @ Bi) @ BiT @ dSs[-1] @ Ai)
+                    dK = -np.linalg.inv(self.cR_num @ self.cR_num.T + BiT @ S_i @ Bi) @ (dR + BiT @ dS @ Bi) @ np.linalg.inv(self.cR_num @ self.cR_num.T + BiT @ S_i @ Bi) @ BiT @ S_i @ Ai + np.linalg.inv(self.cR_num @ self.cR_num.T + BiT @ S_i @ Bi) @ BiT @ dS @ Ai
 
                     dSs.append(dS)
                     dKs.append(dK)
-
-            return np.array(dKs).transpose((0, 2, 3, 1))
+            if len(self.K_num.shape) == 4:
+                return np.transpose(dKs, (2, 0, 3, 4, 1))
+            else:
+                return np.transpose(dKs, (0, 2, 3, 1))
         else:
-            dKS_dQR = self.dx_dy_fun(self.A_num, self.B_num, self.cQ_num, np.expand_dims(self.cR_num, axis=-1), self.S_num, self.K_num)
+            dKS_dQR = self.dx_dy_fun(self.A_num, self.B_num, self.cQ_num, np.expand_dims(self.cR_num, axis=-1), self.S_num, self.K_num)  # TODO: is it correct with expand dims here??
             dK_dQR = dKS_dQR[-np.product(self.K.shape):, :]
             return dK_dQR.toarray().reshape(*self.K.shape, self.weights_size)
 
@@ -197,7 +226,7 @@ class LQR:
     def diff(self, x):
         return self.get_policy_gradient(x)
 
-    def _compute_lqr(self):  # TODO: supress pending deprecated warnings about matrix
+    def _compute_lqr(self):  # TODO: can have indices argument to only recalculate certain systems
         """Solve the discrete time lqr controller.
 
         dx/dt = A x + B u
@@ -210,20 +239,35 @@ class LQR:
             Q_num = self.cQ_num @ self.cQ_num.T
             R_num = self.cR_num @ self.cR_num.T
 
-            if isinstance(self.A_num, list) or (isinstance(self.A_num, np.ndarray) and len(self.A_num.shape) == 3):
-                assert (isinstance(self.B_num, list) or (isinstance(self.A_num, np.ndarray) and len(self.B_num.shape) == 3)) and len(self.A_num) == len(self.B_num)
+            if self.time_varying:
                 S_num, K_num = [], []
-                for i in reversed(range(len(self.A_num))):
-                    if i == len(self.A_num) - 1:
-                        S_num.append(np.matrix(scipy.linalg.solve_discrete_are(self.A_num[i], self.B_num[i], Q_num, R_num)))
+                for i in reversed(range(self.A_num.shape[-3])):
+                    if len(self.A_num.shape) == 4:
+                        Ai = self.A_num[:, i, :, :]
+                        Bi = self.B_num[:, i, :, :]
+                        AiT = np.transpose(Ai, (0, 2, 1))
+                        BiT = np.transpose(Bi, (0, 2, 1))
                     else:
-                        S_num.append(Q_num + self.A_num[i].T @ S_num[-1] @ self.A_num[i] - self.A_num[i].T @ S_num[-1] @ self.B_num[
-                            i] @ scipy.linalg.inv(R_num + self.B_num[i].T @ S_num[-1] @ self.B_num[i]) @ self.B_num[i].T @ S_num[
-                                          -1] @ self.A_num[i])
-                    K_num.append(self._calculate_gain_matrix(self.A_num[i], self.B_num[i], R_num, S_num[-1]))
+                        Ai = self.A_num[i]
+                        Bi = self.B_num[i]
+                        AiT = Ai.T
+                        BiT = Bi.T
+                    if i == self.A_num.shape[-3] - 1:
+                        if len(self.A_num.shape) == 4:
+                            S_num.append([])
+                            for s_i in range(self.A_num.shape[0]):
+                                S_num[-1].append(scipy.linalg.solve_discrete_are(Ai[s_i], Bi[s_i], Q_num, R_num))
+                        else:
+                            S_num.append(scipy.linalg.solve_discrete_are(Ai, Bi, Q_num, R_num))
+                    else:
+                        S_num.append(Q_num + AiT @ S_num[-1] @ Ai - AiT @ S_num[-1] @ Bi @ np.linalg.inv(R_num + BiT @ S_num[-1] @ Bi) @ BiT @ S_num[-1] @ Ai)
+                    K_num.append(self._calculate_gain_matrix(Ai, Bi, R_num, S_num[-1]))
 
                 self.S_num = np.array(list(reversed(S_num)))
                 self.K_num = np.array(list(reversed(K_num)))
+                if len(self.S_num.shape) == 4:
+                    self.S_num = self.S_num.swapaxes(0, 1)
+                    self.K_num = self.K_num.swapaxes(0, 1)
 
             else:
                 # first, try to solve the ricatti equation
@@ -231,8 +275,8 @@ class LQR:
                 self.S_num = S.A
 
                 # compute the LQR gain
-                #self.K = np.matrix(scipy.linalg.inv(np.atleast_2d(self.R)) * (self.B.T * self.S))
-                self.K_num = np.matrix(scipy.linalg.inv(np.atleast_2d(self.B_num.T @ S @ self.B_num + R_num)) @ (self.B_num.T @ S @ self.A_num)).A
+                #self.K = np.matrix(np.linalg.inv(np.atleast_2d(self.R)) * (self.B.T * self.S))
+                self.K_num = np.matrix(np.linalg.inv(np.atleast_2d(self.B_num.T @ S @ self.B_num + R_num)) @ (self.B_num.T @ S @ self.A_num)).A
 
                 self.E, eigVecs = scipy.linalg.eig(self.A_num - self.B_num @ self.K_num)
         except np.linalg.LinAlgError as e:
@@ -243,7 +287,11 @@ class LQR:
             raise e
 
     def _calculate_gain_matrix(self, A, B, R, S):
-        return np.matrix(scipy.linalg.inv(np.atleast_2d(B.T @ S @ B + R)) @ B.T @ S @ A)
+        if len(B.shape) == 3:
+            BT = np.transpose(B, (0, 2, 1))
+        else:
+            BT = B.T
+        return np.linalg.inv(np.atleast_2d(BT @ S @ B + R)) @ BT @ S @ A
 
     @property
     def weights_size(self):
@@ -264,7 +312,7 @@ class LQR:
         """
         return self._w.flatten()
 
-    def set_weights(self, w):
+    def set_weights(self, w, compute_lqr=True):
         """
         Setter.
 
@@ -290,7 +338,8 @@ class LQR:
         self.cQ_num = set_matrix_weights(self.cQ_num, w_q)
         self.cR_num = set_matrix_weights(self.cR_num, w_r)
 
-        self._compute_lqr()
+        if compute_lqr:
+            self._compute_lqr()
 
     def get_weight_names(self):
         all_params = str(self.lqr_eq_parameters).strip("[]").split(",")
@@ -321,7 +370,7 @@ def gradient_check_tv(system, print_mode, n=5, h=5, eps=1e-4, tolerance=1e-6, se
                 print("Grad = \n{}".format(_grad))
                 print("Diff: \n{}".format(num_grad - _grad))
                 print("-" * 30)
-        pi = LQR(_A, _B, _Q, _R)
+        pi = LQR(_A, _B, _Q, _R, time_varying=True)
         grad = pi._grad_K()
         ws = np.copy(pi.get_weights())
         ws[idx] += eps
@@ -331,11 +380,14 @@ def gradient_check_tv(system, print_mode, n=5, h=5, eps=1e-4, tolerance=1e-6, se
         pi.set_weights(ws)
         Kn = np.copy(pi.K_num)
         w_names = pi.get_weight_names()
-        for t in reversed(range(len(Kp))):
-            print_results(Kp[t], Kn[t], grad[-(t+1), :, :, idx], w_names[idx], t)
+        for t in reversed(range(Kp.shape[-3])):
+            if len(Kp.shape) == 4:
+                print_results(Kp[:, t, ...], Kn[:, t, ...], grad[:, -(t+1), :, :, idx], w_names[idx], t)
+            else:
+                print_results(Kp[t], Kn[t], grad[-(t + 1), :, :, idx], w_names[idx], t)
 
     assert print_mode in ["all", "failure", "none"]
-    pi = LQR(**system)
+    pi = None
 
     if seed is not None:
         np.random.seed(seed)
@@ -344,12 +396,13 @@ def gradient_check_tv(system, print_mode, n=5, h=5, eps=1e-4, tolerance=1e-6, se
         system["A"] = [system["A"] + np.random.uniform(-0.5, 0.5, size=system["A"].shape) for _ in range(h)]
         system["B"] = [system["B"] + np.random.uniform(-0.5, 0.5, size=system["B"].shape) for _ in range(h)]
 
+    systems = []
     for n_i in range(n):
         success = False
         while not success:
             try:
                 _system = copy.deepcopy(system)
-                rand_comp = np.random.choice(["A", "B", "Q", "R"])
+                rand_comp = np.random.choice(["A", "B"])#, "Q", "R"])
                 _system[rand_comp] = np.random.uniform(-3, 3, size=_system[rand_comp].shape if not isinstance(_system[rand_comp], list) else _system[rand_comp][0].shape)
                 if rand_comp in ["Q", "R"]:
                     _system[rand_comp] = (_system[rand_comp] + _system[rand_comp].T) / 2
@@ -357,12 +410,19 @@ def gradient_check_tv(system, print_mode, n=5, h=5, eps=1e-4, tolerance=1e-6, se
                         raise np.linalg.LinAlgError
                 elif rand_comp in ["A", "B"]:
                     _system[rand_comp] = [_system[rand_comp] + np.random.uniform(-0.5, 0.5,  size=_system[rand_comp][0].shape) for _ in range(h)]
+                if pi is None:
+                    pi = LQR(**_system, time_varying=True)
                 pi.set_numeric_value(_system)
-                for w_i in range(pi.weights_size):
-                    perturb_weight(*_system.values(), w_i, _eps=eps)
+                systems.append(_system)
                 success = True
             except np.linalg.LinAlgError as e:
                 pass
+
+    for w_i in range(pi.weights_size):
+        perturb_weight([s["A"] for s in systems],
+                       [s["B"] for s in systems],
+                       system["Q"],
+                       system["R"], w_i, _eps=eps)
 
 
 def gradient_check(system, print_mode, n=5, eps=1e-4, tolerance=1e-6, seed=None):
