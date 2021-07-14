@@ -26,12 +26,13 @@ class VecNormalize(VecEnvWrapper):
     """
 
     def __init__(self, venv, training=True, norm_obs=True, norm_reward=False,
-                 clip_obs=10., clip_reward=10., gamma=0.99, epsilon=1e-8, mean_mask=None, var_mask=None):
+                 clip_obs=10., clip_reward=10., gamma=0.99, epsilon=1e-8, mean_mask=None, var_mask=None, clip_mask=None):
         VecEnvWrapper.__init__(self, venv)
         if venv.num_envs == 1:
             self.obs_rms = RunningMeanStd(shape=self.observation_space.shape, mean_mask=mean_mask, var_mask=var_mask, update_every=8)
         else:
             self.obs_rms = RunningMeanStd(shape=self.observation_space.shape, mean_mask=mean_mask, var_mask=var_mask)
+        self.clip_mask = clip_mask
         self.ret_rms = RunningMeanStd(shape=())
         self.clip_obs = clip_obs
         self.clip_reward = clip_reward
@@ -116,9 +117,11 @@ class VecNormalize(VecEnvWrapper):
         Calling this method does not update statistics.
         """
         if self.norm_obs:
-            obs = np.clip((obs - self.obs_rms.mean) / np.sqrt(self.obs_rms.var + self.epsilon * (~np.array(self.obs_rms.var_mask) if self.obs_rms.var_mask is not None else 1)),
-                          -self.clip_obs,
-                          self.clip_obs)
+            obs = (obs - self.obs_rms.mean) / np.sqrt(self.obs_rms.var + self.epsilon * (~np.array(self.obs_rms.var_mask) if self.obs_rms.var_mask is not None else 1))
+            if self.clip_mask is None:
+                obs = np.clip(obs, -self.clip_obs, self.clip_obs)
+            else:
+                obs[..., self.clip_mask] = np.clip(obs[..., self.clip_mask], -self.clip_obs, self.clip_obs)
         return obs
 
     def normalize_reward(self, reward: np.ndarray) -> np.ndarray:
