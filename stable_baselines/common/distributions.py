@@ -324,6 +324,240 @@ class BernoulliProbabilityDistributionType(ProbabilityDistributionType):
         return tf.int32
 
 
+class GP0GeneralizedPoissonProbabilityDistributionType(ProbabilityDistributionType):
+    def __init__(self, size):
+        """
+        The probability distribution type for Bernoulli input
+
+        :param size: (int) the number of dimensions of the Bernoulli distribution
+        """
+        self.size = size
+
+    def probability_distribution_class(self):
+        return GP0GeneralizedPoissonProbabilityDistribution
+
+    def proba_distribution_from_latent(self, pi_latent_vector, vf_latent_vector, init_scale=1.0, init_bias=0.0,
+                                       init_bias_vf=None):
+        if init_bias_vf is None:
+            init_bias_vf = init_bias
+        rate = tf.nn.relu(linear(pi_latent_vector, 'pi_r', self.size, init_scale=init_scale * 500, init_bias=init_bias + 35 * (1 - -0.5)))
+        delta = linear(pi_latent_vector, "pi_d", self.size, init_scale=init_scale, init_bias=-0.5)
+        #delta = tf.get_variable(name='pi/delta', shape=[1, self.size], initializer=tf.constant_initializer(-0.5))
+        q_values = linear(vf_latent_vector, 'q', self.size, init_scale=init_scale, init_bias=init_bias_vf)
+        return self.proba_distribution_from_flat(rate, delta), rate, q_values
+
+    def proba_distribution_from_flat(self, rate, delta):
+        return self.probability_distribution_class()(rate, delta)
+
+    def param_shape(self):
+        return [self.size]
+
+    def sample_shape(self):
+        return [self.size]
+
+    def sample_dtype(self):
+        return tf.float32
+
+
+class GeneralizedPoissonProbabilityDistributionType(ProbabilityDistributionType):
+    def __init__(self, size):
+        """
+        The probability distribution type for Bernoulli input
+
+        :param size: (int) the number of dimensions of the Bernoulli distribution
+        """
+        self.size = size
+        self.max = 50.0
+
+    def probability_distribution_class(self):
+        return GeneralizedPoissonProbabilityDistribution
+
+    def proba_distribution_from_latent(self, pi_latent_vector, vf_latent_vector, init_scale=1.0, init_bias=0.0,
+                                       init_bias_vf=None):
+        if init_bias_vf is None:
+            init_bias_vf = init_bias
+        rate = tf.nn.relu(linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias))
+        alpha = tf.get_variable(name='pi/alpha', shape=[1, self.size], initializer=tf.constant_initializer(-0.01), constraint=lambda z: tf.clip_by_value(z, -1/self.max + 1e-3, 1/self.max))
+        #alpha = tf.constant(-0.015, shape=[1, self.size])
+        q_values = linear(vf_latent_vector, 'q', self.size, init_scale=init_scale, init_bias=init_bias_vf)
+        return self.proba_distribution_from_flat(rate, alpha), rate, q_values
+
+    def proba_distribution_from_flat(self, rate, alpha):
+        return self.probability_distribution_class()(rate, alpha)
+
+    def param_shape(self):
+        return [self.size]
+
+    def sample_shape(self):
+        return [self.size]
+
+    def sample_dtype(self):
+        return tf.float32
+
+
+try:
+    import tensorflow_probability as tfp
+
+
+    class NegativeBinomialProbabilityDistributionType(ProbabilityDistributionType):
+        def __init__(self, size):
+            """
+            The probability distribution type for Bernoulli input
+
+            :param size: (int) the number of dimensions of the Bernoulli distribution
+            """
+            self.size = size
+
+        def probability_distribution_class(self):
+            return NegativeBinomialProbabilityDistribution
+
+        def proba_distribution_from_latent(self, pi_latent_vector, vf_latent_vector, init_scale=1.0, init_bias=0.0, init_bias_vf=None):
+            if init_bias_vf is None:
+                init_bias_vf = init_bias
+            pdparam = tf.nn.relu(linear(pi_latent_vector, 'pi', self.size, init_scale=init_scale, init_bias=init_bias + 25))
+            #pdparam = tf.Print(pdparam, [pdparam], "Counts: ")
+            logits = tf.get_variable(name='pi/logits', shape=[1, self.size], initializer=tf.zeros_initializer())
+            #logits = tf.Print(logits, [logits], "Logits: ")
+            q_values = linear(vf_latent_vector, 'q', self.size, init_scale=init_scale, init_bias=init_bias_vf)
+            return self.proba_distribution_from_flat(pdparam, logits), pdparam, q_values
+
+        def proba_distribution_from_flat(self, counts, logits):
+            return self.probability_distribution_class()(counts, logits)
+
+        def param_shape(self):
+            return [self.size]
+
+        def sample_shape(self):
+            return [self.size]
+
+        def sample_dtype(self):
+            return tf.int32
+
+
+    class NegativeBinomialProbabilityDistribution(ProbabilityDistribution):
+        def __init__(self, counts, logits):
+            """
+            Probability distributions from Bernoulli input
+
+            :param logits: ([float]) the Bernoulli input data
+            """
+            self.counts = counts
+            self.logits = logits
+            #self.probabilities = tf.sigmoid(logits)
+            self.dist = tfp.distributions.NegativeBinomial(counts, logits=logits)
+            super(NegativeBinomialProbabilityDistribution, self).__init__()
+
+        def flatparam(self):
+            return self.counts, self.logits
+
+        def mode(self):
+            return self.dist.mode()
+
+        def neglogp(self, x):
+            return -tf.squeeze(self.dist.log_prob(tf.cast(x, tf.float32)), -1)
+
+        def kl(self, other):
+            return self.dist.kl_divergence(other)
+
+        def entropy(self):
+            return tf.reduce_mean(self.logits) #self.dist.entropy()  # https://arxiv.org/pdf/1708.06394.pdf
+
+        def sample(self):
+            return self.dist.sample()
+
+        @classmethod
+        def fromflat(cls, *flat):
+            """
+            Create an instance of this from new Bernoulli input
+
+            :param flat: ([float]) the Bernoulli input data
+            :return: (ProbabilityDistribution) the instance from the given Bernoulli input data
+            """
+            return cls(*flat)
+
+
+    class PoissonProbabilityDistributionType(ProbabilityDistributionType):
+        def __init__(self, size):
+            """
+            The probability distribution type for Bernoulli input
+
+            :param size: (int) the number of dimensions of the Bernoulli distribution
+            """
+            self.size = size
+
+        def probability_distribution_class(self):
+            return PoissonProbabilityDistribution
+
+        def proba_distribution_from_latent(self, pi_latent_vector, vf_latent_vector, init_scale=1.0, init_bias=0.0,
+                                           init_bias_vf=None):
+            if init_bias_vf is None:
+                init_bias_vf = init_bias
+            pdparam = tf.nn.relu(linear(pi_latent_vector, 'pi', self.size, init_scale=init_scale * 5e2, init_bias=init_bias + 20))  # rate
+            # pdparam = tf.Print(pdparam, [pdparam], "Counts: ")
+            #logits = tf.get_variable(name='pi/logits', shape=[1, self.size], initializer=tf.zeros_initializer())
+            # logits = tf.Print(logits, [logits], "Logits: ")
+            q_values = linear(vf_latent_vector, 'q', self.size, init_scale=init_scale, init_bias=init_bias_vf)
+            return self.proba_distribution_from_flat(pdparam), pdparam, q_values
+
+        def proba_distribution_from_flat(self, rate):
+            return self.probability_distribution_class()(rate)
+
+        def param_shape(self):
+            return [self.size]
+
+        def sample_shape(self):
+            return [self.size]
+
+        def sample_dtype(self):
+            return tf.int32
+
+
+    class PoissonProbabilityDistribution(ProbabilityDistribution):
+        def __init__(self, rate):
+            """
+            Probability distributions from Bernoulli input
+
+            :param logits: ([float]) the Bernoulli input data
+            """
+            self.rate = rate
+            # self.probabilities = tf.sigmoid(logits)
+            self.dist = tfp.distributions.Poisson(rate)
+            super(PoissonProbabilityDistribution, self).__init__()
+
+        def flatparam(self):
+            return self.rate
+
+        def mode(self):
+            return self.dist.mode()
+
+        def neglogp(self, x):
+            return -tf.squeeze(self.dist.log_prob(tf.cast(x, tf.float32)), -1)
+
+        def kl(self, other):
+            return self.dist.kl_divergence(other)
+
+        def entropy(self):
+            return 0.0#self.dist.entropy()
+
+        def sample(self):
+            return self.dist.sample()
+
+        @classmethod
+        def fromflat(cls, *flat):
+            """
+            Create an instance of this from new Bernoulli input
+
+            :param flat: ([float]) the Bernoulli input data
+            :return: (ProbabilityDistribution) the instance from the given Bernoulli input data
+            """
+            return cls(*flat)
+
+
+except ImportError:
+    print("Warning: Tensorflow-probability not installed, custom probability distributions relying on this library will not be available.")
+
+
+
 class MixProbabilityDistributionType(ProbabilityDistributionType):
     def __init__(self, size):
         """
@@ -350,6 +584,48 @@ class MixProbabilityDistributionType(ProbabilityDistributionType):
 
     def proba_distribution_from_flat(self, et, g_flat):
         return self.probability_distribution_class()(et, g_flat)
+
+    def param_shape(self):
+        return [self.size]
+
+    def sample_shape(self):
+        return [self.size]
+
+    def sample_dtype(self):
+        return tf.float32
+
+
+class RLMPCProbabilityDistributionType(ProbabilityDistributionType):
+    def __init__(self, size):
+        """
+        The probability distribution type for Bernoulli input
+
+        :param size: (int) the number of dimensions of the Bernoulli distribution
+        """
+        self.size = size
+
+    def probability_distribution_class(self):
+        return RLMPCProbabilityDistribution
+
+    def proba_distribution_from_latent(self, pi_latent_vector, vf_latent_vector,  g_mean, g_std=1, init_scale=1.0, init_bias=0.0, init_bias_horizon=None, init_bias_vf=None, max_horizon=50.0):
+        if init_bias_vf is None:
+            init_bias_vf = init_bias
+        if init_bias_horizon is None:
+            init_bias_horizon = init_bias
+        etparam = linear(pi_latent_vector, 'pi/et', 1, init_scale=init_scale, init_bias=init_bias)
+
+        rate = tf.nn.relu(linear(pi_latent_vector, "pi/horizon_rate", 1, init_scale=init_scale, init_bias=init_bias_horizon))
+        alpha = tf.get_variable(name='pi/horizon_alpha', shape=[1, 1], initializer=tf.constant_initializer(-1 / (2 * max_horizon)),
+                                constraint=lambda z: tf.clip_by_value(z, -1 / max_horizon + 1e-3, 1 / max_horizon))
+
+        logstd_0 = tf.get_variable(name='pi/lqr_logstd', initializer=tf.constant(np.log(g_std, dtype=np.float32), shape=[1, g_mean.shape[-1]]), trainable=True)  # TODO: consider changing to nontrainable
+        g_param = tf.concat([g_mean, g_mean * 0.0 + logstd_0], axis=1)
+
+        q_values = linear(vf_latent_vector, 'q', 1, init_scale=init_scale, init_bias=init_bias_vf)
+        return self.proba_distribution_from_flat(etparam, rate, alpha, g_param), tf.concat([etparam, rate, alpha, g_param], axis=1), q_values
+
+    def proba_distribution_from_flat(self, et, rate, alpha, g_flat):
+        return self.probability_distribution_class()(et, rate, alpha, g_flat)
 
     def param_shape(self):
         return [self.size]
@@ -602,15 +878,135 @@ class BernoulliProbabilityDistribution(ProbabilityDistribution):
         return cls(flat)
 
 
-class MixProbabilityDistribution(ProbabilityDistribution):
-    def __init__(self, logits, flat_g):
+class GP0GeneralizedPoissonProbabilityDistribution(ProbabilityDistribution):   # GP-0 (Consul, 1973 and 1989)
+    def __init__(self, rate, delta):
+        """
+        Probability distributions from Bernoulli input
+
+        :param logits: ([float]) the Bernoulli input data
+        """
+        self.rate = rate
+        self.delta = delta
+        self.sample_ph = tf.placeholder(tf.float32, shape=rate.shape, name="gpd_sample_ph")
+        super(GP0GeneralizedPoissonProbabilityDistribution, self).__init__()
+
+    def flatparam(self):
+        return self.rate, self.delta
+
+    def mean(self):
+        return self.rate / (1 - self.delta)  # TODO: possibly round and/or cast to integer
+
+    def variance(self):
+        return self.mean() / tf.square(1 - self.delta)
+
+    def mode(self):  # mode is the point with the highest pmf, think will just set to mean for now
+        return self.mean()
+
+    def pmf(self, x, rate, delta, pmf_x_1=None):
+        if x == 0:
+            return np.exp(-rate)
+        elif pmf_x_1 is None:
+            return rate * np.power(rate + delta * x, x - 1) * np.exp(-rate - delta * x) / np.math.factorial(x)
+        else:
+            x = float(x)
+            return np.exp(np.log(pmf_x_1) + (x - 1) * np.log(rate + delta * x) - (x - 2) * np.log(rate + delta * (x - 1)) - np.log(x) - delta)
+
+            N = np.power(rate + delta * x, x - 1)
+            D = (np.power(rate + delta * (x - 1), x - 2)) * x * np.exp(delta)
+            if not np.any(np.isinf(N)) or np.any(np.isnan(N)):  # TODO: fix, should go through each
+                return pmf_x_1 * N / D
+            else:
+                lp = np.log(pmf_x_1) - (x - 1) * np.log(rate + delta * x) + x * np.log(rate + delta * (x + 1)) - delta - np.log(x + 1)
+                return np.exp(lp)
+
+    def neglogp(self, x):  # TODO: can maybe even remove the last term since it doesnt depend on the model parameters
+        return tf.reduce_sum(tf.log(self.rate) + (x - 1) * tf.log(self.rate + self.delta * x) - (self.rate + self.delta * x) - tf.lgamma(x + 1), axis=-1)
+
+    def kl(self, other):
+        raise NotImplementedError
+
+    def entropy(self):  # assuming GPR has same entropy as Poisson but where var != mean
+        var = self.variance()
+        return 0.5 * tf.log(2 * np.pi * np.e * var) - 1 / (12 * var) - 1 / (24 * tf.square(var)) - 19 / (360 * tf.math.pow(var, 3))
+
+    def sample(self):
+        #samples_from_uniform = tf.random_uniform(tf.shape(self.rate))
+        #sample = 1
+        #cdf = self.pmf(sample)
+        #while samples_from_uniform < cdf:
+        #    cdf += self.pmf(sample)
+        #return tf.cast(sample, tf.float32)
+        return self.sample_ph
+
+    @classmethod
+    def fromflat(cls, rate, dispersion):
+        """
+        Create an instance of this from new Bernoulli input
+
+        :param flat: ([float]) the Bernoulli input data
+        :return: (ProbabilityDistribution) the instance from the given Bernoulli input data
+        """
+        return cls(rate, dispersion)
+
+
+class GeneralizedPoissonProbabilityDistribution(ProbabilityDistribution):   # GP-2 (Famoye, 1993/ Wang 1997)
+    def __init__(self, rate, alpha):
+        """
+        Probability distributions from Bernoulli input
+
+        :param logits: ([float]) the Bernoulli input data
+        """
+        self.rate = rate
+        self.alpha = alpha
+        self.max = 50.0
+        super(GeneralizedPoissonProbabilityDistribution, self).__init__()
+
+    def flatparam(self):
+        return self.rate, self.alpha
+
+    def mean(self):
+        return self.rate
+
+    def variance(self):
+        return self.rate * tf.square(1 + self.alpha * self.rate)
+
+    def mode(self):  # mode is the point with the highest pmf, think will just set to mean for now
+        return tf.ceil(self.mean())
+
+    def neglogp(self, x):  # TODO: can maybe even remove the last term since it doesnt depend on the model parameters
+        return -tf.reduce_sum(x * tf.log(self.rate / (1 + self.alpha * self.rate)) + (x - 1) * tf.log(1 + self.alpha * x) - (self.rate * (1 + self.alpha * x) / (1 + self.alpha * self.rate)), axis=-1)# - tf.lgamma(x + 1), axis=-1)
+
+    def kl(self, other):
+        raise NotImplementedError
+
+    def entropy(self):  # assuming GPR has same entropy as Poisson but where var != mean
+        var = self.variance()
+        return 0.5 * tf.log(2 * np.pi * np.e * var) - 1 / (12 * var) - 1 / (24 * tf.square(var)) - 19 / (360 * tf.math.pow(var, 3))
+
+    def sample(self):  # Normal approximation for sampling
+        samples_from_normal = tf.random_normal(tf.shape(self.rate))
+        return tf.clip_by_value(tf.floor(self.mean() + tf.sqrt(self.variance()) * samples_from_normal + 0.5), 0, self.max)  # TODO: not sure if correct to limit to max, but this solves nan problems in neglogp, perhaps better to use two tf wheres to give a value for when 1 + alpha *(x or rate) < 0
+
+    @classmethod
+    def fromflat(cls, rate, dispersion):
+        """
+        Create an instance of this from new Bernoulli input
+
+        :param flat: ([float]) the Bernoulli input data
+        :return: (ProbabilityDistribution) the instance from the given Bernoulli input data
+        """
+        return cls(rate, dispersion)
+
+
+class MixProbabilityDistributionOld(ProbabilityDistribution):
+    def __init__(self, logits_b, flat_g):
         """
         Probability distributions from Mixed Distribution of Bernoulli and Gaussian input
 
         :param logits: ([float]) the Bernoulli input data
         """
-        self.logits = logits
-        self.probabilities = tf.sigmoid(logits)
+        self.logits_b = logits_b
+        self.probabilities_b = tf.sigmoid(logits_b)
         self.flat_g = flat_g
         mean, logstd = tf.split(axis=len(flat_g.shape) - 1, num_or_size_splits=2, value=flat_g)
         self.g_mean = mean
@@ -627,7 +1023,7 @@ class MixProbabilityDistribution(ProbabilityDistribution):
 
     def neglogp(self, x):  # TODO: should it be positive/negative (or both?).
         et, u = tf.expand_dims(x[:, 0], 1), x[:, 1:]
-        self.etneglogp = etneglogp = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits,
+        self.etneglogp = etneglogp = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits_b,
                                                                           labels=et, name="etneglogp"),
                              axis=-1)
 
@@ -646,8 +1042,8 @@ class MixProbabilityDistribution(ProbabilityDistribution):
                                                                      labels=self.probabilities), axis=-1)
 
     def entropy(self):  # TODO: might be overestimating (i.e. counting mutual information between distributions several times). Can it be negative?
-        et_ent = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits,
-                                                                     labels=self.probabilities), axis=-1)
+        et_ent = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits_b,
+                                                                     labels=self.probabilities_b), axis=-1)
         g_ent = tf.reduce_sum(self.g_logstd + .5 * np.log(2.0 * np.pi * np.e), axis=-1)
         return et_ent + g_ent
 
@@ -669,6 +1065,158 @@ class MixProbabilityDistribution(ProbabilityDistribution):
         """
         raise NotImplementedError
         return cls(flat)
+
+
+class MixProbabilityDistribution(ProbabilityDistribution):
+    def __init__(self, b_logits, g_flat, nb_logits, nb_counts):
+        """
+        Probability distributions from Mixed Distribution of Bernoulli and Gaussian input
+
+        :param logits: ([float]) the Bernoulli input data
+        """
+        self.b_logits = b_logits
+        self.b_probabilities = tf.sigmoid(b_logits)
+        self.g_flat = g_flat
+
+        mean, logstd = tf.split(axis=len(g_flat.shape) - 1, num_or_size_splits=2, value=g_flat)
+        self.g_mean = mean
+        self.g_logstd = logstd
+        self.g_std = tf.exp(logstd)
+
+        self.nb_logits = nb_logits
+        self.nb_counts = nb_counts
+
+        self.nb_dist = tfp.distributions.NegativeBinomial(nb_counts, logits=nb_logits)
+        super(MixProbabilityDistribution, self).__init__()
+
+    def flatparam(self):
+        return self.b_logits, self.g_flat, self.nb_logits, self.nb_counts
+
+    def mode(self):
+        et = tf.round(self.b_probabilities)
+        return tf.concat([et, (1 - et) * self.g_mean], axis=1)
+
+    def neglogp(self, x):  # TODO: should it be positive/negative (or both?).
+        et, u = tf.expand_dims(x[:, 0], 1), x[:, 1:]
+        etneglogp = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.b_logits,
+                                                                          labels=et, name="etneglogp"),
+                             axis=-1)
+
+        g_neglogp = 0.5 * tf.reduce_sum(tf.square((u - self.g_mean * (1 - et)) / self.g_std), axis=-1) \
+               + 0.5 * np.log(2.0 * np.pi) * tf.cast(tf.shape(u)[-1], tf.float32) \
+               + tf.reduce_sum(self.g_logstd, axis=-1)
+
+        #return self.gaussian_0.neglogp(u)
+        return etneglogp + g_neglogp
+
+    def kl(self, other):
+        raise NotImplementedError
+        return tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=other.logits,
+                                                                     labels=self.probabilities), axis=-1) - \
+               tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits,
+                                                                     labels=self.probabilities), axis=-1)
+
+    def entropy(self):  # TODO: might be overestimating (i.e. counting mutual information between distributions several times). Can it be negative?
+        et_ent = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.b_logits,
+                                                                     labels=self.b_probabilities), axis=-1)
+        g_ent = tf.reduce_sum(self.g_logstd + .5 * np.log(2.0 * np.pi * np.e), axis=-1)
+        return et_ent + g_ent
+
+    def sample(self):
+        samples_from_uniform = tf.random_uniform(tf.shape(self.b_probabilities))
+        et = tf.cast(math_ops.less(samples_from_uniform, self.b_probabilities), tf.float32)
+        #u = tf.zeros_like(self.gaussian_0.mean, dtype=tf.float32)
+        u = self.g_mean * (1 - et) + self.g_std * tf.random_normal(tf.shape(self.g_mean),
+                                                       dtype=self.g_mean.dtype)
+        return tf.concat([et, u], axis=-1)
+
+    @classmethod
+    def fromflat(cls, flat):
+        """
+        Create an instance of this from new Bernoulli input
+
+        :param flat: ([float]) the Bernoulli input data
+        :return: (ProbabilityDistribution) the instance from the given Bernoulli input data
+        """
+        raise NotImplementedError
+        return cls(flat)
+
+
+class RLMPCProbabilityDistribution(ProbabilityDistribution):
+    def __init__(self, b_logits, horizon_rate, horizon_alpha, g_flat):
+        """
+        Probability distributions from Mixed Distribution of Bernoulli and Gaussian input
+
+        :param logits: ([float]) the Bernoulli input data
+        """
+        self.b_logits = b_logits
+        self.b_probabilities = tf.sigmoid(b_logits)
+        self.g_flat = g_flat
+
+        self.horizon_gpd = GeneralizedPoissonProbabilityDistribution(horizon_rate, horizon_alpha)
+
+        mean, logstd = tf.split(axis=len(g_flat.shape) - 1, num_or_size_splits=2, value=g_flat)
+        self.g_mean = mean  # Need to modify mode and neglogp og Gaussian (by multiplying by et) so dont use Gaussian class
+        self.g_logstd = logstd
+        self.g_std = tf.exp(logstd)
+
+        super(RLMPCProbabilityDistribution, self).__init__()
+
+    def flatparam(self):
+        return self.b_logits, self.g_flat, self.nb_logits, self.nb_counts
+
+    def mode(self):
+        et = tf.round(self.b_probabilities)
+        return tf.concat([et, self.horizon_gpd.mode(), (1 - et) * self.g_mean], axis=1)
+
+    def neglogp(self, x):  # TODO: should it be positive/negative (or both?).
+        et, horizon, u = x[:, 0], tf.expand_dims(x[:, 1], 1), x[:, 2:]
+        etneglogp = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.b_logits,
+                                                                          labels=tf.expand_dims(et, 1), name="etneglogp"),
+                             axis=-1)
+
+        horizonneglogp = self.horizon_gpd.neglogp(horizon) * et  # TODO: should it be zero when not recomputing? And should it simply be added?
+
+        g_neglogp = 0.5 * tf.reduce_sum(tf.square((u - self.g_mean * (1 - tf.expand_dims(et, 1))) / self.g_std), axis=-1) \
+               + 0.5 * np.log(2.0 * np.pi) * tf.cast(tf.shape(u)[-1], tf.float32) \
+               + tf.reduce_sum(self.g_logstd, axis=-1)
+
+        return etneglogp + horizonneglogp + g_neglogp
+
+    def kl(self, other):
+        raise NotImplementedError
+        return tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=other.logits,
+                                                                     labels=self.probabilities), axis=-1) - \
+               tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits,
+                                                                     labels=self.probabilities), axis=-1)
+
+    def entropy(self):  # TODO: might be overestimating (i.e. counting mutual information between distributions several times). Can it be negative?
+        et_ent = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.b_logits,
+                                                                     labels=self.b_probabilities), axis=-1)
+        et = tf.round(self.b_probabilities)
+        horizon_ent = self.horizon_gpd.entropy() * et
+        g_ent = tf.reduce_sum(self.g_logstd + .5 * np.log(2.0 * np.pi * np.e), axis=-1) * (1 - et)
+        return et_ent + horizon_ent + g_ent
+
+    def sample(self):
+        samples_from_uniform = tf.random_uniform(tf.shape(self.b_probabilities))
+        et = tf.cast(math_ops.less(samples_from_uniform, self.b_probabilities), tf.float32)
+        horizon = self.horizon_gpd.sample()
+        u = self.g_mean * (1 - et) + self.g_std * tf.random_normal(tf.shape(self.g_mean),
+                                                       dtype=self.g_mean.dtype)
+        return tf.concat([et, horizon, u], axis=-1)
+
+    @classmethod
+    def fromflat(cls, flat):
+        """
+        Create an instance of this from new Bernoulli input
+
+        :param flat: ([float]) the Bernoulli input data
+        :return: (ProbabilityDistribution) the instance from the given Bernoulli input data
+        """
+        raise NotImplementedError
+        return cls(flat)
+
 
 
 def make_proba_dist_type(ac_space, dist_type=None):
