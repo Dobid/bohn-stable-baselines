@@ -152,7 +152,7 @@ class VecNormalize(VecEnvWrapper):
         """
         Reset all environments
         """
-        obs = self.venv.reset(*args, **kwargs)
+        obs = self.venv.reset(indices=indices, *args, **kwargs)
         self.old_obs = obs
         self.ret = np.zeros(self.num_envs)
         if self.training:
