@@ -229,11 +229,7 @@ class PPO2(ActorCriticRLModel):
 
                 if hasattr(train_model, "lqr_output"):
                     with tf.variable_scope("model", reuse=True):
-                        train_model.lqr_K_var = tf.get_variable("LQR_K")
                         train_model.lqr_weights = tf.get_variable("LQR_weights")
-                    with tf.variable_scope("loss", reuse=True):
-                        train_model.lqr_K_grad_var = tf.get_variable("LQR_K_grad")
-                        #act_model.lqr_K
 
                 self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl', 'clipfrac']
 
@@ -245,6 +241,14 @@ class PPO2(ActorCriticRLModel):
                     if hasattr(train_model.proba_distribution, "probabilities"):
                         tf.summary.scalar("prob1", tf.reduce_mean(train_model.proba_distribution.probabilities))
                         tf.summary.scalar("prob1var", tf.math.reduce_std(train_model.proba_distribution.probabilities))
+                    if hasattr(train_model.proba_distribution, "rate"):
+                        tf.summary.scalar("rate", tf.reduce_mean(train_model.proba_distribution.rate))
+                        tf.summary.scalar("rate_var", tf.math.reduce_std(train_model.proba_distribution.rate))
+                    if hasattr(train_model.proba_distribution, "horizon_gpd"):
+                        tf.summary.scalar("horizon_mean", tf.reduce_mean(train_model.proba_distribution.horizon_gpd.rate))
+                        tf.summary.scalar("horizon_var", tf.math.reduce_std(train_model.proba_distribution.horizon_gpd.rate))
+                        tf.summary.scalar("mpc_compute", tf.reduce_mean(train_model.proba_distribution.b_probabilities))
+                        tf.summary.scalar("mpc_compute_var", tf.math.reduce_std(train_model.proba_distribution.b_probabilities))
                     if self.clip_range_vf_ph is not None:
                         tf.summary.scalar('clip_range_vf', tf.reduce_mean(self.clip_range_vf_ph))
                     tf.summary.scalar("explained_variance", tf.reduce_mean(1 - tf.math.reduce_variance(vpred - self.rewards_ph) / tf.math.reduce_variance(self.rewards_ph)))
@@ -263,6 +267,13 @@ class PPO2(ActorCriticRLModel):
                             tf.summary.image('observation', train_model.obs_ph)
                         else:
                             tf.summary.histogram('observation', train_model.obs_ph)
+
+                if self.full_tensorboard_log:
+                    for var in tf_util.get_trainable_vars("model"):
+                        tf.summary.histogram("weights/" + var.name, var)
+                    for var in grads:
+                        if var[0] is not None:
+                            tf.summary.histogram("grads/" + var[1].name, var[0])
 
                 self.train_model = train_model
                 self.act_model = act_model
