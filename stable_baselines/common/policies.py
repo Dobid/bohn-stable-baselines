@@ -702,7 +702,7 @@ class FeedForwardPolicy(ActorCriticPolicy):
 
 
 class LQRPolicy(ActorCriticPolicy):
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, A, B, Q, R, obs_module_indices=None, std=1, reuse=False, layers=None, net_arch=None,
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, A, B, Q, R, time_varying=False, obs_module_indices=None, std=1, reuse=False, layers=None, net_arch=None,
                  act_fun=tf.tanh, cnn_extractor=nature_cnn, feature_extraction="mlp", measure_execution_time=False, **kwargs):
         from stable_baselines.lqr.policy import LQR
         #dist_type = kwargs.pop("dist_type", "guassian")
@@ -710,7 +710,11 @@ class LQRPolicy(ActorCriticPolicy):
                                                 scale=(feature_extraction == "cnn"))#, dist_type=dist_type)
 
         #self._kwargs_check(feature_extraction, kwargs)
+        self.time_varying = time_varying
         self.lqr = LQR(A, B, Q, R)
+        self.lqr_As = []
+        self.lqr_Bs = []
+        self.lqr_system_idxs = []
 
         if layers is not None:
             warnings.warn("Usage of the `layers` parameter is deprecated! Use net_arch instead "
@@ -729,12 +733,13 @@ class LQRPolicy(ActorCriticPolicy):
         self.last_execution_time = None
 
         with tf.variable_scope("model", reuse=reuse):
-            K_num = tf.constant(self.lqr.K_num.astype(np.float32))
-            K_grad = tf.constant(self.lqr._grad_K().astype(np.float32))
+            if self.time_varying:
+                self.lqr_K_ph = tf.placeholder(tf.float32, shape=(None, *self.lqr.K_num.shape[-2:]), name="lqr_K_ph")
+                self.lqr_K_grad_ph = tf.placeholder(tf.float32, shape=(None, self.lqr.weights_size, *self.lqr.K_num.shape[-2:]), name="lqr_K_grad_ph")
+            else:
+                self.lqr_K_ph = tf.placeholder(tf.float32, shape=self.lqr.K_num.shape, name="lqr_K_ph")
+                self.lqr_K_grad_ph = tf.placeholder(tf.float32, shape=(self.lqr.weights_size, *self.lqr.K_num.shape[-2:]), name="lqr_K_grad_ph")
             weights_num = tf.constant(self.lqr.get_weights().astype(np.float32).reshape(1, -1))
-            #self.lqr_K = tf.get_variable(initializer=K_num, trainable=False, name="LQR_K", use_resource=True)
-            #self.lqr_K_grad = tf.get_variable(initializer=K_grad, trainable=False, name="LQR_K_grad", use_resource=True)
-            #self.weights = tf.get_variable(initializer=weights_num, trainable=True, name="LQR_weights", use_resource=True)
 
             if obs_module_indices is not None:
                 self.obs_module_indices = obs_module_indices
@@ -745,6 +750,11 @@ class LQRPolicy(ActorCriticPolicy):
                 vf_obs.set_shape([None, sum(vf_mask)])
                 lqr_obs = tf.boolean_mask(self.processed_obs, lqr_mask, name="lqr_obs", axis=1)
                 lqr_obs.set_shape([None, sum(lqr_mask)])
+
+                if self.time_varying:
+                    self.lqr_k_idx = obs_module_indices.index("lqr")
+                else:
+                    self.lqr_k_idx = None
 
             if feature_extraction == "cnn":
                 vf_latent = cnn_extractor(vf_obs, **kwargs)
@@ -758,14 +768,21 @@ class LQRPolicy(ActorCriticPolicy):
         with tf.variable_scope("model", reuse=tf.AUTO_REUSE, use_resource=True):
             @tf.custom_gradient
             def lqr_action(x):
-                lqr_K = tf.get_variable(initializer=K_num, trainable=False, name="LQR_K", use_resource=True)
                 weights = tf.get_variable(initializer=weights_num, trainable=True, name="LQR_weights", use_resource=True)
-                u_lqr = -tf.matmul(x, tf.transpose(lqr_K))
+                if time_varying:
+                    k, x = x[:, 0], tf.expand_dims(x[:, 1:], axis=-1)
+                    #Ks = tf.gather(lqr_K, tf.cast(k, tf.int32), axis=0)
+                    u_lqr = -tf.squeeze(tf.matmul(self.lqr_K_ph, x), axis=-1)
+                else:
+                    u_lqr = -tf.matmul(x, tf.transpose(self.lqr_K_ph))
                 u_lqr += tf.reduce_sum(weights) * 0.0
                 def grad(dy, variables=None):
-                    lqr_K_grad = tf.get_variable(initializer=K_grad, trainable=False, name="LQR_K_grad", use_resource=True)
                     #dy = tf.Print(dy, [tf.reduce_mean(dy)], "dy: ")
-                    return None, [tf.matmul(tf.transpose(dy), tf.matmul(x, -lqr_K_grad))]
+                    if time_varying:
+                        #grad_Ks = tf.gather(lqr_K_grad, tf.cast(k,  tf.int32), axis=0)
+                        return None, [tf.matmul(dy, -tf.squeeze(tf.matmul(self.lqr_K_grad_ph, tf.expand_dims(x, axis=1)), axis=[-2, -1]), transpose_a=True)]
+                    else:
+                        return None, [tf.matmul(dy, -tf.matmul(x, self.lqr_K_grad_ph), transpose_a=True)]
                     #return (dy * x, [tf.reduce_mean(dy * -tf.matmul(x, lqr_K_grad), axis=0, keepdims=True)])
                 return u_lqr, grad
 
@@ -791,12 +808,16 @@ class LQRPolicy(ActorCriticPolicy):
             self.last_execution_time = time.process_time() - start_time
             value, neglogp = self.sess.run([self.value_flat, self.neglogp],{self.obs_ph: obs})
         else:
+            if self.time_varying:
+                K = self.lqr.K_num[obs[..., self.lqr_k_idx].astype(np.int32)]
+            else:
+                K = self.lqr.K_num
             if deterministic:
                 action, value, neglogp = self.sess.run([self.deterministic_action, self.value_flat, self.neglogp],
-                                                       {self.obs_ph: obs})
+                                                       {self.obs_ph: obs, self.lqr_K_ph: K})
             else:
                 action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp],
-                                                       {self.obs_ph: obs})
+                                                       {self.obs_ph: obs, self.lqr_K_ph: K})
         return action, value, self.initial_state, neglogp
 
     def proba_step(self, obs, state=None, mask=None):
@@ -807,7 +828,7 @@ class LQRPolicy(ActorCriticPolicy):
 
 
 class ETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they are correct)
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, A, B, Q, R, obs_module_indices, std=1, reuse=False, layers=None, net_arch=None,
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, A, B, Q, R, obs_module_indices, time_varying=False, std=1, reuse=False, layers=None, net_arch=None,
                  act_fun=tf.tanh, cnn_extractor=nature_cnn, feature_extraction="mlp", measure_execution_time=False, **kwargs):
         from stable_baselines.lqr.policy import LQR
         dist_type = MixProbabilityDistributionType
@@ -815,10 +836,14 @@ class ETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they a
                                                 scale=(feature_extraction == "cnn"), dist_type=dist_type)
 
         #self._kwargs_check(feature_extraction, kwargs)
+        self.time_varying = time_varying
         self.obs_module_indices = obs_module_indices
         self.lqr = LQR(A, B, Q, R)
-        self.mpc_actions = []
-        self.mpc_actions_mb = []
+        self.lqr_As = []
+        self.lqr_Bs = []
+        self.lqr_system_idxs = []
+        #self.mpc_actions = []
+        #self.mpc_actions_mb = []
 
         if layers is not None:
             warnings.warn("Usage of the `layers` parameter is deprecated! Use net_arch instead "
@@ -836,16 +861,21 @@ class ETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they a
         self.last_execution_time = None
 
         with tf.variable_scope("model", reuse=reuse):
-            K_num = tf.constant(self.lqr.K_num.astype(np.float32))
-            K_grad = tf.constant(self.lqr._grad_K().astype(np.float32))
+            if self.time_varying:
+                self.lqr_K_ph = tf.placeholder(tf.float32, shape=(None, *self.lqr.K_num.shape[-2:]), name="lqr_K_ph")
+                self.lqr_K_grad_ph = tf.placeholder(tf.float32,
+                                                    shape=(None, self.lqr.weights_size, *self.lqr.K_num.shape[-2:]),
+                                                    name="lqr_K_grad_ph")
+            else:
+                self.lqr_K_ph = tf.placeholder(tf.float32, shape=self.lqr.K_num.shape, name="lqr_K_ph")
+                self.lqr_K_grad_ph = tf.placeholder(tf.float32,
+                                                    shape=(self.lqr.weights_size, *self.lqr.K_num.shape[-2:]),
+                                                    name="lqr_K_grad_ph")
             weights_num = tf.constant(self.lqr.get_weights().astype(np.float32).reshape(1, -1))
-            #self.lqr_K = tf.get_variable(initializer=K_num, trainable=False, name="LQR_K", use_resource=True)
-            #self.lqr_K_grad = tf.get_variable(initializer=K_grad, trainable=False, name="LQR_K_grad", use_resource=True)
-            #self.weights = tf.get_variable(initializer=weights_num, trainable=True, name="LQR_weights", use_resource=True)
 
-            mpc_action_shape = [None] + list(ac_space.shape)
-            mpc_action_shape[-1] -= 1
-            self.mpc_action_ph = tf.placeholder(tf.float32, shape=mpc_action_shape, name="mpc_action_ph")
+            #mpc_action_shape = [None] + list(ac_space.shape)
+            #mpc_action_shape[-1] -= 1
+            #self.mpc_action_ph = tf.placeholder(tf.float32, shape=mpc_action_shape, name="mpc_action_ph")
 
             et_mask = np.array([m == "et" for m in self.obs_module_indices])
             lqr_mask = np.array([m == "lqr" for m in self.obs_module_indices])
@@ -853,6 +883,11 @@ class ETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they a
             et_obs.set_shape([None, sum(et_mask)])
             lqr_obs = tf.boolean_mask(self.processed_obs, lqr_mask, name="lqr_obs", axis=1)
             lqr_obs.set_shape([None, sum(lqr_mask)])
+
+            if self.time_varying:  # k is first of the lqr variables
+                self.lqr_k_idx = obs_module_indices.index("lqr")
+            else:
+                self.lqr_k_idx = None
 
             if feature_extraction == "cnn":
                 pi_latent, vf_latent = cnn_extractor(et_obs, **kwargs)
@@ -866,15 +901,24 @@ class ETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they a
         with tf.variable_scope("model", reuse=reuse, use_resource=True):
             @tf.custom_gradient
             def lqr_action(x):
-                lqr_K = tf.get_variable(initializer=K_num, trainable=False, name="LQR_K", use_resource=True)
                 weights = tf.get_variable(initializer=weights_num, trainable=True, name="LQR_weights", use_resource=True)
-                u_lqr = -tf.matmul(x, tf.transpose(lqr_K))
+                if time_varying:
+                    k, x = x[:, 0], tf.expand_dims(x[:, 1:], axis=-1)
+                    # Ks = tf.gather(lqr_K, tf.cast(k, tf.int32), axis=0)
+                    u_lqr = -tf.squeeze(tf.matmul(self.lqr_K_ph, x), axis=-1)
+                else:
+                    u_lqr = -tf.matmul(x, tf.transpose(self.lqr_K_ph))
                 u_lqr += tf.reduce_sum(weights) * 0.0
+
                 def grad(dy, variables=None):
-                    lqr_K_grad = tf.get_variable(initializer=K_grad, trainable=False, name="LQR_K_grad", use_resource=True)
-                    #dy = tf.Print(dy, [tf.reduce_mean(dy)], "dy: ")
-                    return None, [tf.matmul(tf.transpose(dy), tf.matmul(x, -lqr_K_grad))]
-                    #return (dy * x, [tf.reduce_mean(dy * -tf.matmul(x, lqr_K_grad), axis=0, keepdims=True)])
+                    # dy = tf.Print(dy, [tf.reduce_mean(dy)], "dy: ")
+                    if time_varying:
+                        # grad_Ks = tf.gather(lqr_K_grad, tf.cast(k,  tf.int32), axis=0)
+                        return None, [tf.matmul(dy, -tf.squeeze(tf.matmul(self.lqr_K_grad_ph, tf.expand_dims(x, axis=1)), axis=[-2, -1]), transpose_a=True)]
+                    else:
+                        return None, [tf.matmul(dy, -tf.matmul(x, self.lqr_K_grad_ph), transpose_a=True)]
+                    # return (dy * x, [tf.reduce_mean(dy * -tf.matmul(x, lqr_K_grad), axis=0, keepdims=True)])
+
                 return u_lqr, grad
 
             self.lqr_output = lqr_action(lqr_obs)
@@ -899,11 +943,23 @@ class ETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they a
             self.last_execution_time = time.process_time() - start_time
             value, neglogp = self.sess.run([self.value_flat, self.neglogp],{self.obs_ph: obs})
         else:
+            if self.time_varying:
+                K = self.lqr.K_num[np.max(obs[..., self.lqr_k_idx].astype(np.int32), len(self.lqr.K_num) - 1)]
+            else:
+                K = self.lqr.K_num
+            if deterministic:
+                action, value, neglogp = self.sess.run([self.deterministic_action, self.value_flat, self.neglogp],
+                                                       {self.obs_ph: obs, self.lqr_K_ph: K})
+            else:
+                action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp],
+                                                       {self.obs_ph: obs, self.lqr_K_ph: K})
+            """
             if deterministic:
                 action, value, neglogp = self.sess.run([self.deterministic_action, self.value_flat, self.neglogp],
                                                        {self.obs_ph: obs, self.mpc_action_ph: np.zeros(shape=(obs.shape[0], *self.mpc_action_ph.shape[1:]))})
             else:
                 action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp], {self.obs_ph: obs, self.mpc_action_ph: np.zeros(shape=(obs.shape[0], *self.mpc_action_ph.shape[1:]))})
+            """
         #action[0, 0] = 0  # TODO:remove (sanity check if same results as just lqr)
         return action, value, self.initial_state, neglogp
 
