@@ -29,10 +29,14 @@ class RunningMeanStd(object):
             else:
                 arr = np.concatenate(self.buf)
                 self.buf = []
-        batch_mean = np.mean(arr, axis=tuple((i for i in range(len(arr.shape) - 1))))
+        if len(self.mean.shape) == 0:
+            batch_mean = np.mean(arr)
+            batch_var = np.var(arr)
+        else:
+            batch_mean = np.mean(arr, axis=tuple((i for i in range(len(arr.shape) - 1))))
+            batch_var = np.var(arr, axis=tuple((i for i in range(len(arr.shape) - 1))))
         if self.mean_mask is not None:
             batch_mean[..., self.mean_mask] = 0
-        batch_var = np.var(arr, axis=tuple((i for i in range(len(arr.shape) - 1))))
         if self.var_mask is not None:
             batch_var[self.var_mask] = 1
         batch_count = arr.shape[0]
