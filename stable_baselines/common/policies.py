@@ -647,6 +647,10 @@ class FeedForwardPolicy(ActorCriticPolicy):
         self.measure_execution_time = measure_execution_time
         self.last_execution_time = None
 
+        proba_kw = {"init_bias": kwargs.pop("init_bias", 0.0), "init_scale": kwargs.pop("init_scale", 0.01)}
+        if "init_bias_vf" in kwargs:
+            proba_kw["init_bias_vf"] = kwargs.pop("init_bias_vf")
+
         with tf.variable_scope("model", reuse=reuse):
             if feature_extraction == "cnn":
                 pi_latent = vf_latent = cnn_extractor(self.processed_obs, **kwargs)
@@ -667,7 +671,7 @@ class FeedForwardPolicy(ActorCriticPolicy):
 
             # TODO: maybe take minimum here
             self._proba_distribution, self._policy, self.q_value = \
-                self.pdtype.proba_distribution_from_latent(pi_latent, vf_latent, init_scale=0.01, init_bias=3.0)#, init_bias_vf=0.0)
+                self.pdtype.proba_distribution_from_latent(pi_latent, vf_latent, **proba_kw)
 
         self._setup_init()
 
@@ -682,8 +686,7 @@ class FeedForwardPolicy(ActorCriticPolicy):
                 action, value, neglogp = self.sess.run([self.deterministic_action, self.value_flat, self.neglogp],
                                                        {self.obs_ph: obs})
             else:
-                action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp],
-                                                       {self.obs_ph: obs})
+                action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp], {self.obs_ph: obs})
         return action, value, self.initial_state, neglogp
 
     def proba_step(self, obs, state=None, mask=None):
