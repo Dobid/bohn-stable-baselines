@@ -216,8 +216,16 @@ class PPO2(ActorCriticRLModel):
                     if self.max_grad_norm is not None:
                         grads, _grad_norm = tf.clip_by_global_norm(grads, self.max_grad_norm)
                     grads = list(zip(grads, self.params))
-                trainer = tf.train.AdamOptimizer(learning_rate=self.learning_rate_ph, epsilon=1e-5)
-                self._train = trainer.apply_gradients(grads)
+
+                trainer = tf.train.AdamOptimizer(learning_rate=self.learning_rate_ph, epsilon=1e-5, beta1=0.9)
+
+                if hasattr(train_model, "lqr_output") and getattr(train_model, "lqr_lr_multiplier", None) is not None:
+                    trainer_lqr = tf.train.AdamOptimizer(learning_rate=self.learning_rate_ph * train_model.lqr_lr_multipler, epsilon=1e-5, beta1=0.9)
+                    train_op1 = trainer.apply_gradients([g for g in grads if "LQR" not in g[1].name])
+                    train_op2 = trainer_lqr.apply_gradients([g for g in grads if "LQR" in g[1].name])
+                    self._train = tf.group(train_op1, train_op2)
+                else:
+                    self._train = trainer.apply_gradients(grads)
 
                 if hasattr(train_model, "lqr_output"):
                     with tf.variable_scope("model", reuse=True):
