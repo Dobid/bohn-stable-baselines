@@ -202,6 +202,7 @@ class SubprocVecEnv(VecEnv):
             # gather images from subprocesses
             # `mode` will be taken into account later
             pipe.send(('render', (args, {**kwargs})))
+
         figs = [pipe.recv() for pipe in self._get_target_remotes(indices)]
         if isinstance(indices, int):
             figs = figs[0]

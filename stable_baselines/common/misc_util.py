@@ -3,6 +3,7 @@ import random
 import gym
 import numpy as np
 import tensorflow as tf
+if type(tf.contrib) != type(tf): tf.contrib._warning = None
 
 
 def zipsame(*seqs):

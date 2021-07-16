@@ -371,7 +371,6 @@ class LQR:
                 if len(self.S_num.shape) == 4:
                     self.S_num = self.S_num.swapaxes(0, 1)
                     self.K_num = self.K_num.swapaxes(0, 1)
-
             else:
                 # first, try to solve the ricatti equation
                 S = np.matrix(scipy.linalg.solve_discrete_are(self.A_num, self.B_num, Q_num, R_num))
