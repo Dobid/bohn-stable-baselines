@@ -318,6 +318,11 @@ class PPO2(ActorCriticRLModel):
         if cliprange_vf is not None and cliprange_vf >= 0:
             td_map[self.clip_range_vf_ph] = cliprange_vf
 
+
+        if hasattr(self.train_model, "lqr_K_ph"):
+            td_map[self.train_model.lqr_K_ph] = self.train_model.lqr_Ks
+            td_map[self.train_model.lqr_K_grad_ph] = self.train_model.lqr_K_grads
+
         if states is None:
             update_fac = max(self.n_batch // self.nminibatches // self.noptepochs, 1)
         else:
@@ -390,6 +395,19 @@ class PPO2(ActorCriticRLModel):
                 if not self.runner.continue_training:
                     break
 
+
+                if getattr(self.train_model, "time_varying", False):
+                    self.train_model.lqr_As = np.array(self.train_model.lqr_As)
+                    self.train_model.lqr_Bs = np.array(self.train_model.lqr_Bs)
+                    self.train_model.lqr_system_idxs = np.array(self.train_model.lqr_system_idxs)
+
+                    self.train_model.old_Q = np.copy(self.train_model.lqr.get_numeric_value("Q"))
+                    self.train_model.old_R = np.copy(self.train_model.lqr.get_numeric_value("R"))
+
+                if self.action_hist_sum is not None:
+                    action_hist_sum = self.sess.run(self.action_hist_sum, {self.action_ph: actions})
+                    writer.add_summary(action_hist_sum, self.num_timesteps)
+
                 self.ep_info_buf.extend(ep_infos)
                 mb_loss_vals = []
                 if states is None:  # nonrecurrent version
@@ -408,20 +426,19 @@ class PPO2(ActorCriticRLModel):
                                 if hasattr(self.train_model, "mpc_action_ph") and False:
                                     self.train_model.mpc_actions_mb = self.train_model.mpc_actions[mbinds]
                                 if getattr(self.train_model, "time_varying", False):
-                                    self.train_model.lqr.set_weights(self.sess.run(self.train_model.lqr_weights))
-                                    Ks, grad_Ks = [], []
-                                    system_Ks, system_gradKs = {}, {}
-                                    for b_i in range(batch_size):  # TODO: can probably get better performance if check if calculation has been done for this A and B sequence before (e.g. subsequent timesteps with no recomputation).
-                                        if not self.train_model.lqr_system_idxs[mbinds[b_i]] in system_Ks:
-                                            self.train_model.lqr.set_numeric_value({"A": self.train_model.lqr_As[self.train_model.lqr_system_idxs[mbinds[b_i]]],
-                                                                                    "B": self.train_model.lqr_Bs[self.train_model.lqr_system_idxs[mbinds[b_i]]]})
-                                            system_Ks[self.train_model.lqr_system_idxs[mbinds[b_i]]] = np.copy(self.train_model.lqr.K_num)
-                                            system_gradKs[self.train_model.lqr_system_idxs[mbinds[b_i]]] = np.copy(self.train_model.lqr._grad_K())
-                                        b_i_k = obs[mbinds][b_i][-5].astype(np.int32)
-                                        Ks.append(system_Ks[self.train_model.lqr_system_idxs[mbinds[b_i]]][b_i_k])
-                                        grad_Ks.append(system_gradKs[self.train_model.lqr_system_idxs[mbinds[b_i]]][b_i_k])
-                                    self.train_model.lqr_Ks = np.array(Ks)
-                                    self.train_model.lqr_K_grads = np.transpose(np.array(grad_Ks), axes=[0, 3, 1, 2])
+                                    unique_system_idxs, unique_inverse_idxs = np.unique(self.train_model.lqr_system_idxs[mbinds], return_inverse=True)  # TODO: the correct Ks and stuff are not extracted
+                                    self.train_model.lqr.set_weights(self.sess.run(self.train_model.lqr_weights), compute_lqr=False)
+                                    self.train_model.lqr.set_numeric_value({"A": self.train_model.lqr_As[unique_system_idxs], "B": self.train_model.lqr_Bs[unique_system_idxs]})
+                                    grad_Ks = self.train_model.lqr._grad_K()
+                                    lqr_Ks = self.train_model.lqr.get_numeric_value("K")
+                                    t_idxs = obs[mbinds, self.train_model.lqr_k_idx].astype(np.int32)
+                                    t_idxs = [min(len(lqr_Ks[idx]) - 1, t_idxs[i]) for i, idx in enumerate(unique_inverse_idxs)]
+                                    if isinstance(lqr_Ks, list):
+                                        self.train_model.lqr_Ks = np.array([lqr_Ks[idx][t_idxs[i]] for i, idx in enumerate(unique_inverse_idxs)])   # TODO: dont know if this works
+                                        self.train_model.lqr_K_grads = np.transpose(np.array([grad_Ks[idx][t_idxs[i]] for i, idx in enumerate(unique_inverse_idxs)]), axes=(0, 3, 1, 2))
+                                    else:
+                                        self.train_model.lqr_Ks = lqr_Ks[unique_inverse_idxs, t_idxs, ...]
+                                        self.train_model.lqr_K_grads = np.transpose(grad_Ks[unique_inverse_idxs, t_idxs, ...], axes=(0, 3, 1, 2))
                                     #self.sess.run([self.train_model.lqr_K_var.assign(Ks), self.train_model.lqr_K_grad_var.assign(grad_Ks)])
 
                                 mb_loss_vals.append(self._train_step(lr_now, cliprange_now, ent_coef_now, *slices, writer=writer,
@@ -456,17 +473,22 @@ class PPO2(ActorCriticRLModel):
                                                                  writer=writer, states=mb_states,
                                                                  cliprange_vf=cliprange_vf_now))
                 if hasattr(self.train_model, "lqr_output"):
-                    # Act model shares parameters with train model
-                    #lqr_weights = self.sess.run(self.train_model.weights)
-                    #self.act_model.lqr.set_weights(lqr_weights)
+                    self.act_model.lqr.set_weights(self.sess.run(self.train_model.lqr_weights))
                     #K_num, K_grad = self.act_model.lqr.K_num, self.act_model.lqr._grad_K()
                     #self.sess.run([self.act_model.lqr_K.assign(K_num), self.act_model.lqr_K_grad.assign(K_grad)])
+                    if getattr(self.train_model, "time_varying", False):
+                        self.train_model.lqr_As, self.train_model.lqr_Bs = list(self.act_model.lqr.get_numeric_value("A")), list(self.act_model.lqr.get_numeric_value("B"))
+                        self.train_model.lqr_system_idxs = [[i for i in range(self.n_envs)]]
 
                     Q = self.train_model.lqr.get_numeric_value("Q")
                     R = self.train_model.lqr.get_numeric_value("R")
-                    K = self.train_model.lqr.get_numeric_value("K")
+                    if not getattr(self.train_model, "time_varying", False):
+                        K = self.train_model.lqr.get_numeric_value("K")
+                        data = zip(["Q", "R", "K"], [Q, R, K])
+                    else:
+                        data = zip(["Q", "R"], [Q, R])
 
-                    for k, v in zip(["Q", "R", "K"], [Q, R, K]):
+                    for k, v in data:
                         v_flat = v.flatten()
                         for v_i in range(v_flat.shape[0]):
                             if len(v.shape) == 1:
@@ -576,6 +598,15 @@ class Runner(AbstractEnvRunner):
         self.lam = lam
         self.gamma = gamma
         self.time_aware = time_aware
+        if getattr(model.act_model, "time_varying", False):  # TODO: fix for n_envs > 1
+            systems = env.env_method("get_linearized_mpc_model_over_prediction")
+            model.act_model.lqr.set_numeric_value({"A": [s[0] for s in systems], "B": [s[1] for s in systems]})
+            for i in range(self.n_envs):
+                As, Bs = systems[i]
+                model.train_model.lqr_As.append(As)  # TODO: fix for n_envs > 1
+                model.train_model.lqr_Bs.append(Bs)
+                #model.train_model.lqr_system_idxs[i].append(len(self.model.train_model.lqr_As) - 1)
+            model.train_model.lqr_system_idxs = [[i for i in range(self.n_envs)]]
 
     def _run(self):
         """
@@ -608,6 +639,25 @@ class Runner(AbstractEnvRunner):
             if isinstance(self.env.action_space, gym.spaces.Box):
                 clipped_actions = np.clip(actions, self.env.action_space.low, self.env.action_space.high)
             self.obs[:], rewards, self.dones, infos = self.env.step(clipped_actions)
+            if getattr(self.model.train_model, "time_varying", False):
+                system_idxs = []
+                for i in range(self.n_envs):
+                    if self.dones[i] or "As" in infos[i]:
+                        if self.dones[i]:
+                            As, Bs = self.env.env_method("get_linearized_mpc_model_over_prediction", indices=i)[0]
+                        else:
+                            As, Bs = infos[i].pop("As"), infos[i].pop("Bs")
+                        self.model.act_model.lqr.set_numeric_value({"A": As, "B": Bs}, indices=i)
+                        #self.model.sess.run(self.model.train_model.lqr_K_var.assign(self.model.train_model.lqr.K_num))
+                        self.model.train_model.lqr_As.append(As)
+                        self.model.train_model.lqr_Bs.append(Bs)
+                        #self.model.train_model.lqr_system_idxs[i].append(len(self.model.train_model.lqr_As) - 1)  # TODO: ensure same length as the other data (it is n_env longer, but i think that is correct, i.e. it has the system from the last step we got the obs from but havent calculated the action for yet).
+                        system_idxs.append(len(self.model.train_model.lqr_As) - 1)
+                    else:
+                        #self.model.train_model.lqr_system_idxs[i].append(self.model.train_model.lqr_system_idxs[i][-1])  # TODO: think this should work but need to ensrue that obs[:, ..] will have same order as this
+                        system_idxs.append(self.model.train_model.lqr_system_idxs[-1][i])
+                self.model.train_model.lqr_system_idxs.append(system_idxs)
+
             self.model.num_timesteps += self.n_envs
 
             if self.callback is not None:
