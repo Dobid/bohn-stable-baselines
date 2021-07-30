@@ -186,7 +186,6 @@ class HERGoalEnvWrapper(object):
         Normalize rewards using this VecNormalize's rewards statistics.
         Calling this method does not update statistics.
         """
-        return reward
         reward = reward / np.sqrt(self.ret_rms.var + self.epsilon)
             #if self.clip_reward is not None:
             #    reward = np.clip(reward, -self.clip_reward, self.clip_reward)
