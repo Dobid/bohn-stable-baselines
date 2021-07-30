@@ -261,6 +261,19 @@ class DiagGaussianProbabilityDistributionType(ProbabilityDistributionType):
         return tf.float32
 
 
+class BoundedDiagGaussianProbabilityDistributionType(DiagGaussianProbabilityDistributionType):
+    def __init__(self, size):
+        """
+        The probability distribution type for multivariate Gaussian input
+
+        :param size: (int) the number of dimensions of the multivariate gaussian
+        """
+        super().__init__(size)
+
+    def probability_distribution_class(self):
+        return BoundedDiagGaussianProbabilityDistribution
+
+
 class BetaProbabilityDistributionType(ProbabilityDistributionType):
     def __init__(self, size):
         """
@@ -757,13 +770,13 @@ class DiagGaussianProbabilityDistribution(ProbabilityDistribution):
         # Bounds are taken into account outside this class (during training only)
         return self.mean
 
-    def neglogp(self, x):
+    def neglogp(self, x):  # TODO: does this reduce one value?? (no, most likely over the actions dims)
         return 0.5 * tf.reduce_sum(tf.square((x - self.mean) / self.std), axis=-1) \
                + 0.5 * np.log(2.0 * np.pi) * tf.cast(tf.shape(x)[-1], tf.float32) \
                + tf.reduce_sum(self.logstd, axis=-1)
 
     def kl(self, other):
-        assert isinstance(other, DiagGaussianProbabilityDistribution)
+        assert isinstance(other, BoundedDiagGaussianProbabilityDistribution)
         return tf.reduce_sum(other.logstd - self.logstd + (tf.square(self.std) + tf.square(self.mean - other.mean)) /
                              (2.0 * tf.square(other.std)) - 0.5, axis=-1)
 
@@ -773,8 +786,57 @@ class DiagGaussianProbabilityDistribution(ProbabilityDistribution):
     def sample(self):
         # Bounds are taken into acount outside this class (during training only)
         # Otherwise, it changes the distribution and breaks PPO2 for instance
-        return self.mean + self.std * tf.random_normal(tf.shape(self.mean),
-                                                       dtype=self.mean.dtype)
+        return self.mean + self.std * tf.random_normal(tf.shape(self.mean), dtype=self.mean.dtype)
+
+    @classmethod
+    def fromflat(cls, flat):
+        """
+        Create an instance of this from new multivariate Gaussian input
+
+        :param flat: ([float]) the multivariate Gaussian input data
+        :return: (ProbabilityDistribution) the instance from the given multivariate Gaussian input data
+        """
+        return cls(flat)
+
+
+class BoundedDiagGaussianProbabilityDistribution(ProbabilityDistribution):
+    def __init__(self, flat):
+        """
+        Probability distributions from multivariate Gaussian input
+
+        :param flat: ([float]) the multivariate Gaussian input data
+        """
+        self.flat = flat
+        mean, logstd = tf.split(axis=len(flat.shape) - 1, num_or_size_splits=2, value=flat)
+        self.mean = mean
+        self.logstd = logstd
+        self.std = tf.exp(logstd)
+        super(BoundedDiagGaussianProbabilityDistribution, self).__init__()
+
+    def flatparam(self):
+        return self.flat
+
+    def mode(self):
+        # Bounds are taken into account outside this class (during training only)
+        return tf.nn.tanh(self.mean)
+
+    def neglogp(self, x):  # TODO: does this reduce one value?? (no, most likely over the actions dims)
+        return 0.5 * tf.reduce_sum(tf.square((x - self.mean) / self.std), axis=-1) \
+               + 0.5 * np.log(2.0 * np.pi) * tf.cast(tf.shape(x)[-1], tf.float32) \
+               + tf.reduce_sum(self.logstd, axis=-1) - tf.reduce_sum(tf.log(1 - tf.square(tf.nn.tanh(x))), axis=1)
+
+    def kl(self, other):
+        assert isinstance(other, BoundedDiagGaussianProbabilityDistribution)
+        return tf.reduce_sum(other.logstd - self.logstd + (tf.square(self.std) + tf.square(self.mean - other.mean)) /
+                             (2.0 * tf.square(other.std)) - 0.5, axis=-1)
+
+    def entropy(self):
+        return tf.reduce_sum(self.logstd + .5 * np.log(2.0 * np.pi * np.e), axis=-1)
+
+    def sample(self):
+        # Bounds are taken into acount outside this class (during training only)
+        # Otherwise, it changes the distribution and breaks PPO2 for instance
+        return tf.nn.tanh(self.mean + self.std * tf.random_normal(tf.shape(self.mean), dtype=self.mean.dtype))
 
     @classmethod
     def fromflat(cls, flat):
