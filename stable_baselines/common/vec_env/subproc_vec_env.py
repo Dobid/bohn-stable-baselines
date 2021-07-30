@@ -266,9 +266,11 @@ class SubprocVecEnv(VecEnv):
         self.remotes[0].send(("env_method", ("convert_dict_to_obs", [obs], {})))
         return self.remotes[0].recv()
 
-    def compute_reward(self, a_goal, d_goal, info):
-        self.remotes[0].send(("env_method", ("compute_reward", [a_goal, d_goal, info], {})))
-        return self.remotes[0].recv()
+    def compute_reward(self, a_goal, d_goal, info, indices=None):
+        remotes = self._get_target_remotes(indices)
+        for remote in remotes:
+            remote.send(("env_method", ("compute_reward", [a_goal, d_goal, info], {})))
+        return [remote.recv() for remote in remotes]
 
     def load_running_average(self, path, suffix=None):
         target_remotes = self._get_target_remotes(None)

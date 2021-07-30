@@ -13,6 +13,8 @@ from stable_baselines.common.buffers import ReplayBuffer
 from stable_baselines.sac.policies import SACPolicy, AHMPCPolicy
 from stable_baselines import logger
 
+from stable_baselines.her.replay_buffer import HindsightExperienceReplayWrapper
+
 import copy
 
 class SAC(OffPolicyRLModel):
@@ -554,7 +556,7 @@ class SAC(OffPolicyRLModel):
                     info = [info]
                     action = [action]
 
-                reward = [r / self.reward_scale for r in reward]
+                #reward = [r / self.reward_scale for r in reward]
 
                 self.num_timesteps += self.n_envs
 
@@ -593,8 +595,12 @@ class SAC(OffPolicyRLModel):
                     if issubclass(self.policy, AHMPCPolicy) and self.policy_tf.train_mpc_value_fn:
                         mpc_extra_data = copy.deepcopy(extra_data[env_i])
                         self.mpc_replay_buffer.add(info[env_i]["data"]["mpc_state"], np.array([0]), info[env_i]["data"]["mpc_rewards"], info[env_i]["data"]["mpc_next_state"], float(done[env_i]), **mpc_extra_data)
-                    self.replay_buffer.add(obs_[env_i], action[env_i], reward_[env_i], new_obs_[env_i],
-                                           float(done[env_i]), **extra_data[env_i])
+                    if isinstance(self.replay_buffer, HindsightExperienceReplayWrapper):
+                        self.replay_buffer.add(obs_[env_i], action[env_i], reward_[env_i], new_obs_[env_i],
+                                           float(done[env_i]), env_i=env_i, **extra_data[env_i])
+                    else:
+                        self.replay_buffer.add(obs_[env_i], action[env_i], reward_[env_i], new_obs_[env_i],
+                                               float(done[env_i]), **extra_data[env_i])
 
                 for env_i in range(self.n_envs):
                     episode_data[env_i].append({"obs": obs, "action": action, "reward": reward, "obs_tp1": new_obs, "done": done, **extra_data[env_i]})

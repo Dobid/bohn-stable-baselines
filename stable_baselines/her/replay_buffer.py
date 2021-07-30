@@ -298,8 +298,8 @@ class HindsightExperienceReplayWrapper(object):
                         prev_state = prev_state[0]
                         achieved_goal = achieved_goal[0]
                         desired_goal = goal[0]
-                    info = {"step": transition_idx, "prev_state": prev_state, "action": action}
-                    reward = self.env.compute_reward(achieved_goal, desired_goal, info)
+                    info = {"step": transition_idx + 1, "prev_state": prev_state, "action": action}
+                    reward = self.env.compute_reward(achieved_goal, desired_goal, info, indices=env_i)[0]
                     # Can we use achieved_goal == desired_goal?
                     done = False
 
