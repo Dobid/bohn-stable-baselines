@@ -659,7 +659,10 @@ class SAC(OffPolicyRLModel):
                                 self.action_noise.reset(env_i)
                             else:
                                 self.action_noise.reset()
-                        obs = self.env.reset()
+                        if issubclass(type(self.env), VecEnv):
+                            obs[env_i] = self.env.reset(indices=env_i)
+                        else:
+                            obs = self.env.reset()
                         if vectorize_objects:
                             obs = [obs]
                         episode_rewards[env_i].append(0.0)

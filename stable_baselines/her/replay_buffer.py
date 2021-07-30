@@ -287,10 +287,6 @@ class HindsightExperienceReplayWrapper(object):
 
                     # Convert concatenated obs to dict, so we can update the goals
                     obs_dict, next_obs_dict = map(self.env.convert_obs_to_dict, (obs, next_obs))
-                    # Update the desired goal in the transition
-                    obs_dict['desired_goal'] = goal
-                    next_obs_dict['desired_goal'] = goal
-
                     prev_state = obs_dict["achieved_goal"]
                     achieved_goal = next_obs_dict['achieved_goal']
                     desired_goal = goal
@@ -298,6 +294,12 @@ class HindsightExperienceReplayWrapper(object):
                         prev_state = prev_state[0]
                         achieved_goal = achieved_goal[0]
                         desired_goal = goal[0]
+                        goal[1:, :] = goal[0, :]
+                    # Update the desired goal in the transition
+                    obs_dict['desired_goal'] = goal
+                    next_obs_dict['desired_goal'] = goal
+
+
                     info = {"step": transition_idx + 1, "prev_state": prev_state, "action": action}
                     reward = self.env.compute_reward(achieved_goal, desired_goal, info, indices=env_i)[0]
                     # Can we use achieved_goal == desired_goal?
