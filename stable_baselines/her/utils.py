@@ -20,7 +20,7 @@ class HERGoalEnvWrapper(object):
     :param env: (gym.GoalEnv)
     """
 
-    def __init__(self, env, norm=False, clip_obs=10, update_every=8):  # TODO: sync with other wrappers (probably has to be done outside this class)
+    def __init__(self, env, norm=False, norm_reward=False, gamma=0.99, clip_obs=10, update_every=8):  # TODO: sync with other wrappers (probably has to be done outside this class)
         super(HERGoalEnvWrapper, self).__init__()
         self._env = env
         self.metadata = self._env.metadata
@@ -68,9 +68,11 @@ class HERGoalEnvWrapper(object):
             raise NotImplementedError("{} space is not supported".format(type(self.spaces[0])))
 
         self.norm = norm
+        self.norm_reward = norm_reward
         self.training = True
         self.orig_obs = None
         self.epsilon = 1e-5
+        self.gamma = gamma
 
         self.update_every = update_every
 
@@ -80,6 +82,8 @@ class HERGoalEnvWrapper(object):
             obs_norm_shape[-1] -= self.goal_dim
             self.obs_rms = RunningMeanStd(shape=obs_norm_shape)
             self.ret_rms = RunningMeanStd(shape=())
+            if norm_reward:
+                self.ret_rms = RunningMeanStd(shape=(), update_every=update_every)
             self.clip_obs = clip_obs
             self.ep_obs_data = []
 
@@ -122,6 +126,8 @@ class HERGoalEnvWrapper(object):
         if self.norm:
             self.orig_obs = np.copy(obs)
             obs = self.normalize_observation(obs, update=True)
+            if self.norm_reward:
+                reward = self.normalize_reward(reward, update=True)
             if len(self.ep_obs_data) > self.update_every:
                 self.obs_rms.update(np.stack(self.ep_obs_data, axis=0))
                 self.ep_obs_data = []
@@ -178,6 +184,23 @@ class HERGoalEnvWrapper(object):
         """
         return self.orig_obs
 
+    def normalize_reward(self, reward: np.ndarray, update=True) -> np.ndarray:
+        """
+        Normalize rewards using this VecNormalize's rewards statistics.
+        Calling this method does not update statistics.
+        """
+        reward = reward / np.sqrt(self.ret_rms.var + self.epsilon)
+        # if self.clip_reward is not None:
+        #    reward = np.clip(reward, -self.clip_reward, self.clip_reward)
+        if update:
+            self._update_reward(reward)
+        return reward
+
+    def _update_reward(self, reward: np.ndarray) -> None:
+        """Update reward normalization statistics."""
+        self.ret = self.ret * self.gamma + reward
+        self.ret_rms.update(np.array([self.ret]))
+
     def seed(self, seed=None):
         return self._env.seed(seed)
 
@@ -186,6 +209,7 @@ class HERGoalEnvWrapper(object):
         if self.norm:
             self.orig_obs = np.copy(obs)
             obs = self.normalize_observation(obs, update=True)
+            self.ret = 0
 
         return obs
 
@@ -196,7 +220,14 @@ class HERGoalEnvWrapper(object):
             desired_goal = desired_goal * np.sqrt(self.obs_rms.var[-self.goal_dim:] + self.epsilon) + \
                             self.obs_rms.mean[-self.goal_dim:]
 
-        return self._env.compute_reward(achieved_goal, desired_goal, info)
+        rew = self._env.compute_reward(achieved_goal, desired_goal, info)
+        if self.norm_reward:
+            if isinstance(rew, list):
+                for i in range(len(rew)):
+                    rew[i] = self.normalize_reward(rew[i], update=False)
+            else:
+                rew = self.normalize_reward(rew, update=False)
+        return rew
 
     def render(self, mode='human', **kwargs):
         return self._env.render(mode, **kwargs)
