@@ -4,7 +4,7 @@ import casadi
 
 
 class LQR:
-    def __init__(self, A, B, Q, R, time_varying, weights=None, input_shape=None, output_shape=(1,), eps=1e-8, **kwargs):
+    def __init__(self, A, B, Q, R, time_varying, weights=None, input_shape=None, output_shape=(1,), eps=1e-8, random_init=False, **kwargs):
         self.E = None  # eigenvalues
         self.eps = eps
         self.time_varying = time_varying
@@ -27,16 +27,22 @@ class LQR:
                 self._horizons = (A.shape[-3],)
 
         self.cQ = casadi.SX.sym("Q", *A.shape[-2:])
-        try:
-            self.cQ_num = np.linalg.cholesky(np.atleast_2d(Q).astype(np.float64))
-        except np.linalg.LinAlgError:
-            self.cQ_num = np.linalg.cholesky(np.atleast_2d(Q).astype(np.float64) + self.eps * np.eye(Q.shape[0]))  # If still fails, notify user
+        if random_init:
+            self.cQ_num = np.random.randn(np.product(Q.shape)).reshape(Q.shape)
+        else:
+            try:
+                self.cQ_num = np.linalg.cholesky(np.atleast_2d(Q).astype(np.float64))
+            except np.linalg.LinAlgError:
+                self.cQ_num = np.linalg.cholesky(np.atleast_2d(Q).astype(np.float64) + self.eps * 1000 * np.eye(Q.shape[0]))  # If still fails, notify user
 
         self.cR = casadi.SX.sym("R", B.shape[-1], B.shape[-1])
-        try:
-            self.cR_num = np.linalg.cholesky(np.atleast_2d(R).astype(np.float64))
-        except np.linalg.LinAlgError:
-            self.cR_num = np.linalg.cholesky(np.atleast_2d(R).astype(np.float64) + self.eps * np.eye(R.shape[0]))
+        if random_init:
+            self.cR_num = np.random.randn(np.product(R.shape)).reshape(R.shape)
+        else:
+            try:
+                self.cR_num = np.linalg.cholesky(np.atleast_2d(R).astype(np.float64))
+            except np.linalg.LinAlgError:
+                self.cR_num = np.linalg.cholesky(np.atleast_2d(R).astype(np.float64) + self.eps * np.eye(R.shape[0]))
 
         self.K = casadi.SX.sym("K", B.shape[-1], A.shape[-1])
         self.K_num = None
@@ -312,7 +318,10 @@ class LQR:
             if isinstance(K, list):
                 t = np.minimum(t, [len(K_i) - 1 for K_i in K]).astype(np.int32)
             else:
-                t = np.minimum(t, K.shape[1] - 1).astype(np.int32)
+                t = np.minimum(t, K.shape[-3] - 1).astype(np.int32)
+                if len(K.shape) == 3:
+                    t = [t]
+                    K = [K]
             K = np.array([K_i[t[i]] for i, K_i in enumerate(K)]).reshape(x.shape[0], *self.K.shape)
             return np.squeeze(-K @ np.atleast_3d(x), -1)
         else:
