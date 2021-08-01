@@ -702,7 +702,7 @@ class FeedForwardPolicy(ActorCriticPolicy):
 
 
 class LQRPolicy(ActorCriticPolicy):
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, A, B, Q, R, time_varying=False, obs_module_indices=None, std=1, reuse=False, layers=None, net_arch=None,
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, A, B, Q, R, time_varying=False, n_lqr=1, obs_module_indices=None, std=1, reuse=False, layers=None, net_arch=None,
                  act_fun=tf.tanh, cnn_extractor=nature_cnn, feature_extraction="mlp", measure_execution_time=False, **kwargs):
         from stable_baselines.lqr.policy import LQR
         #dist_type = kwargs.pop("dist_type", "guassian")
@@ -710,11 +710,17 @@ class LQRPolicy(ActorCriticPolicy):
                                                 scale=(feature_extraction == "cnn"))#, dist_type=dist_type)
 
         #self._kwargs_check(feature_extraction, kwargs)
+
+        A = [A for _ in range(n_lqr)]  # TODO: maybe check if already multienv A and B
+        B = [B for _ in range(n_lqr)]
+
         self.time_varying = time_varying
-        self.lqr = LQR(A, B, Q, R)
+        self.obs_module_indices = obs_module_indices
+        self.lqr = LQR(A, B, Q, R, time_varying=time_varying, random_init=False)
         self.lqr_As = []
         self.lqr_Bs = []
         self.lqr_system_idxs = []
+        #self.d_actions = []
 
         if layers is not None:
             warnings.warn("Usage of the `layers` parameter is deprecated! Use net_arch instead "
@@ -782,7 +788,7 @@ class LQRPolicy(ActorCriticPolicy):
                         #grad_Ks = tf.gather(lqr_K_grad, tf.cast(k,  tf.int32), axis=0)
                         return None, [tf.matmul(dy, -tf.squeeze(tf.matmul(self.lqr_K_grad_ph, tf.expand_dims(x, axis=1)), axis=[-2, -1]), transpose_a=True)]
                     else:
-                        return None, [tf.matmul(dy, -tf.matmul(x, self.lqr_K_grad_ph), transpose_a=True)]
+                        return None, [tf.matmul(dy, -tf.squeeze(tf.matmul(self.lqr_K_grad_ph, tf.transpose(x)), axis=-2), transpose_a=True, transpose_b=True)]
                     #return (dy * x, [tf.reduce_mean(dy * -tf.matmul(x, lqr_K_grad), axis=0, keepdims=True)])
                 return u_lqr, grad
 
@@ -808,16 +814,25 @@ class LQRPolicy(ActorCriticPolicy):
             self.last_execution_time = time.process_time() - start_time
             value, neglogp = self.sess.run([self.value_flat, self.neglogp],{self.obs_ph: obs})
         else:
+            K = self.lqr.get_numeric_value("K")
             if self.time_varying:
-                K = self.lqr.K_num[obs[..., self.lqr_k_idx].astype(np.int32)]
-            else:
-                K = self.lqr.K_num
+                if obs.shape[0] > 1:
+                    if isinstance(K, list):
+                        t_idx = np.minimum(obs[..., self.lqr_k_idx], [len(K_i) - 1 for K_i in K]).astype(np.int32)
+                    else:
+                        t_idx = np.minimum(obs[..., self.lqr_k_idx], K.shape[1] - 1).astype(np.int32)
+                    K = np.array([K[i][t_idx[i]] for i in range(len(K))]).reshape(obs.shape[0], *self.lqr.K.shape)
+                else:
+                    K = K[int(min(obs[..., self.lqr_k_idx], len(K) - 1))].reshape(1, *self.lqr.K_num.shape[1:])
             if deterministic:
                 action, value, neglogp = self.sess.run([self.deterministic_action, self.value_flat, self.neglogp],
                                                        {self.obs_ph: obs, self.lqr_K_ph: K})
             else:
                 action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp],
                                                        {self.obs_ph: obs, self.lqr_K_ph: K})
+
+        #self.d_actions.append(self.sess.run(self.deterministic_action, {self.obs_ph: obs, self.lqr_K_ph: K}))
+
         return action, value, self.initial_state, neglogp
 
     def proba_step(self, obs, state=None, mask=None):
