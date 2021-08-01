@@ -380,7 +380,8 @@ class GeneralizedPoissonProbabilityDistributionType(ProbabilityDistributionType)
         :param size: (int) the number of dimensions of the Bernoulli distribution
         """
         self.size = size
-        self.max = 50.0
+        self.max = 40.0
+        self.min = 1.0
 
     def probability_distribution_class(self):
         return GeneralizedPoissonProbabilityDistribution
@@ -389,8 +390,10 @@ class GeneralizedPoissonProbabilityDistributionType(ProbabilityDistributionType)
                                        init_bias_vf=None):
         if init_bias_vf is None:
             init_bias_vf = init_bias
+        #rate = tf.nn.tanh(linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias))
+        #rate = (self.max - self.min) * (rate - (-1)) / (1 - (-1)) + self.min
         rate = tf.nn.relu(linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias))
-        alpha = tf.get_variable(name='pi/alpha', shape=[1, self.size], initializer=tf.constant_initializer(-0.01), constraint=lambda z: tf.clip_by_value(z, -1/self.max + 1e-3, 1/self.max))
+        alpha = tf.get_variable(name='pi/alpha', shape=[1, self.size], initializer=tf.constant_initializer(-1 /(2 * self.max)), constraint=lambda z: tf.clip_by_value(z, -1/self.max + 1e-3, 1/self.max))
         #alpha = tf.constant(-0.015, shape=[1, self.size])
         q_values = linear(vf_latent_vector, 'q', self.size, init_scale=init_scale, init_bias=init_bias_vf)
         return self.proba_distribution_from_flat(rate, alpha), rate, q_values
@@ -1020,7 +1023,7 @@ class GeneralizedPoissonProbabilityDistribution(ProbabilityDistribution):   # GP
         """
         self.rate = rate
         self.alpha = alpha
-        self.max = 50.0
+        self.max = 40.0
         super(GeneralizedPoissonProbabilityDistribution, self).__init__()
 
     def flatparam(self):
