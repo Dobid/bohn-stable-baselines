@@ -320,8 +320,12 @@ class PPO2(ActorCriticRLModel):
 
 
         if hasattr(self.train_model, "lqr_K_ph"):
-            td_map[self.train_model.lqr_K_ph] = self.train_model.lqr_Ks
-            td_map[self.train_model.lqr_K_grad_ph] = self.train_model.lqr_K_grads
+            if self.train_model.time_varying:
+                td_map[self.train_model.lqr_K_ph] = self.train_model.lqr_Ks
+                td_map[self.train_model.lqr_K_grad_ph] = self.train_model.lqr_K_grads
+            else:
+                td_map[self.train_model.lqr_K_ph] = self.train_model.lqr.K_num
+                td_map[self.train_model.lqr_K_grad_ph] = np.transpose(self.train_model.lqr._grad_K(), (2, 0, 1))
 
         if states is None:
             update_fac = max(self.n_batch // self.nminibatches // self.noptepochs, 1)
@@ -404,7 +408,7 @@ class PPO2(ActorCriticRLModel):
                     self.train_model.old_Q = np.copy(self.train_model.lqr.get_numeric_value("Q"))
                     self.train_model.old_R = np.copy(self.train_model.lqr.get_numeric_value("R"))
 
-                if self.action_hist_sum is not None:
+                if getattr(self, "action_hist_sum", None) is not None:
                     action_hist_sum = self.sess.run(self.action_hist_sum, {self.action_ph: actions})
                     writer.add_summary(action_hist_sum, self.num_timesteps)
 
@@ -478,6 +482,8 @@ class PPO2(ActorCriticRLModel):
                     #self.sess.run([self.act_model.lqr_K.assign(K_num), self.act_model.lqr_K_grad.assign(K_grad)])
                     if getattr(self.train_model, "time_varying", False):
                         self.train_model.lqr_As, self.train_model.lqr_Bs = list(self.act_model.lqr.get_numeric_value("A")), list(self.act_model.lqr.get_numeric_value("B"))
+                        if self.n_envs == 1:
+                            self.train_model.lqr_As, self.train_model.lqr_Bs = [self.train_model.lqr_As], [self.train_model.lqr_Bs]
                         self.train_model.lqr_system_idxs = [[i for i in range(self.n_envs)]]
 
                     Q = self.train_model.lqr.get_numeric_value("Q")
@@ -707,7 +713,13 @@ class Runner(AbstractEnvRunner):
         mb_returns = mb_advs + mb_values
 
         mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, true_reward = \
-            map(swap_and_flatten, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, true_reward))
+            map(swap_and_flatten, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, true_reward))  # TODO: because of swap and flatten, lqr stuff is probably in the wrong order
+
+        if getattr(self.model.train_model, "time_varying", False):
+            self.model.train_model.lqr_system_idxs = swap_and_flatten(np.array(self.model.train_model.lqr_system_idxs[:-1]))
+
+            #self.model.act_model.origKs = swap_and_flatten(np.array(self.model.act_model.origKs))
+            #self.model.act_model.d_actions = swap_and_flatten(np.array(self.model.act_model.d_actions))
 
         return mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_states, ep_infos, true_reward
 
