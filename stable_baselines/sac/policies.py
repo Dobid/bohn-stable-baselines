@@ -180,7 +180,7 @@ class FeedForwardPolicy(SACPolicy):
 
     def __init__(self, sess, ob_space, ac_space, n_env=1, n_steps=1, n_batch=None, reuse=False, layers=None,
                  cnn_extractor=nature_cnn, feature_extraction="cnn", reg_weight=0.0, initial_std=1,
-                 layer_norm=False, act_fun=tf.nn.relu, obs_module_indices=None, **kwargs):
+                 layer_norm=False, act_fun=tf.nn.relu, obs_module_indices=None, goal_size=None, **kwargs):
         super(FeedForwardPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch,
                                                 reuse=reuse,
                                                 scale=(feature_extraction == "cnn" and cnn_extractor == nature_cnn))
@@ -204,6 +204,7 @@ class FeedForwardPolicy(SACPolicy):
         self.reg_weight = reg_weight
         self.entropy = None
         self.obs_module_indices = obs_module_indices
+        self.goal_size = goal_size
 
         self.policy_pre_activation = None
 
@@ -217,6 +218,13 @@ class FeedForwardPolicy(SACPolicy):
 
         if self.obs_module_indices is not None:
             obs = tf.gather(obs, self.obs_module_indices["pi"], axis=-1)
+
+        if self.goal_size is not None:
+            #obs = tf.Print(obs, [obs], "Before subtract: ", summarize=-1)
+            obs_no_goal, goal = obs[..., :-self.goal_size], obs[..., -self.goal_size:]
+            goal -= obs_no_goal[..., -self.goal_size:]
+            obs = tf.concat([obs_no_goal, goal], axis=-1)
+            #obs = tf.Print(obs, [obs], "After subtract: ", summarize=-1)
 
         with tf.variable_scope(scope, reuse=reuse):
             if self.feature_extraction == "cnn":
@@ -264,6 +272,11 @@ class FeedForwardPolicy(SACPolicy):
 
         if self.obs_module_indices is not None:
             obs = tf.gather(obs, self.obs_module_indices["vf"], axis=-1)
+
+        if self.goal_size is not None:
+            obs_no_goal, goal = obs[..., :-self.goal_size], obs[..., -self.goal_size:]
+            goal -= obs_no_goal[..., -self.goal_size:]
+            obs = tf.concat([obs_no_goal, goal], axis=-1)
 
         with tf.variable_scope(scope, reuse=reuse):
             if self.feature_extraction == "cnn" and self.cnn_vf:
