@@ -401,6 +401,8 @@ class LQR:
                     print(v)
             print("Time-varying: {}".format(self.time_varying))
             print("Horizons: {}".format(self._horizons))
+            if self.time_varying:
+                print("Iteration {}".format(i))
             raise e
 
     def _calculate_gain_matrix(self, A, B, R, S):
