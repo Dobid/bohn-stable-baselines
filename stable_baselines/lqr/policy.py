@@ -390,11 +390,17 @@ class LQR:
                 self.K_num = np.matrix(np.linalg.inv(np.atleast_2d(self.B_num.T @ S @ self.B_num + R_num)) @ (self.B_num.T @ S @ self.A_num)).A
 
                 self.E, eigVecs = scipy.linalg.eig(self.A_num - self.B_num @ self.K_num)
-        except np.linalg.LinAlgError as e:
-            print("LinalgError for system:")
-            for comp_name in ["A", "B", "cQ", "cR"]:
-                print(comp_name)
-                print(getattr(self, "{}_num".format(comp_name)))
+        except Exception as e:
+            print("Error computing lqr for system:")
+            with np.printoptions(precision=5, suppress=True, linewidth=np.inf):
+                for comp_name in ["A", "B", "cQ", "cR", "Q", "R"]:
+                    print(comp_name)
+                    v = getattr(self, "{}_num".format(comp_name))
+                    if comp_name in ["Q", "R"]:
+                        v = v.T @ v
+                    print(v)
+            print("Time-varying: {}".format(self.time_varying))
+            print("Horizons: {}".format(self._horizons))
             raise e
 
     def _calculate_gain_matrix(self, A, B, R, S):
