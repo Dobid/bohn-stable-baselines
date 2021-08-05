@@ -393,12 +393,14 @@ class LQR:
         except Exception as e:
             print("Error computing lqr for system:")
             with np.printoptions(precision=5, suppress=True, linewidth=np.inf):
-                for comp_name in ["A", "B", "cQ", "cR", "Q", "R"]:
+                for comp_name in ["A", "B", "cQ", "cR"]:
                     print(comp_name)
                     v = getattr(self, "{}_num".format(comp_name))
-                    if comp_name in ["Q", "R"]:
-                        v = v.T @ v
                     print(v)
+                    if comp_name in ["cQ", "cR"]:
+                        print(comp_name[1:])
+                        v = v.T @ v
+                        print(v)
             print("Time-varying: {}".format(self.time_varying))
             print("Horizons: {}".format(self._horizons))
             if self.time_varying:
