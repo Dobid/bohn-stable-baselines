@@ -380,8 +380,8 @@ class GeneralizedPoissonProbabilityDistributionType(ProbabilityDistributionType)
         :param size: (int) the number of dimensions of the Bernoulli distribution
         """
         self.size = size
-        self.max = 40.0
-        self.min = 1.0
+        self.max_val = 40.0
+        self.min_val = 1.0
 
     def probability_distribution_class(self):
         return GeneralizedPoissonProbabilityDistribution
@@ -390,16 +390,16 @@ class GeneralizedPoissonProbabilityDistributionType(ProbabilityDistributionType)
                                        init_bias_vf=None):
         if init_bias_vf is None:
             init_bias_vf = init_bias
-        #rate = tf.nn.tanh(linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias))
-        #rate = (self.max - self.min) * (rate - (-1)) / (1 - (-1)) + self.min
-        rate = tf.nn.relu(linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias))
-        alpha = tf.get_variable(name='pi/alpha', shape=[1, self.size], initializer=tf.constant_initializer(-1 /(2 * self.max)), constraint=lambda z: tf.clip_by_value(z, -1/self.max + 1e-3, 1/self.max))
+        rate = tf.nn.tanh(linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias))
+        rate = (self.max_val - self.min_val) * (rate - (-1)) / (1 - (-1)) + self.min_val  # scale rate to (min, max) horizon
+        #rate = tf.nn.relu(linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias))
+        alpha = tf.get_variable(name='pi/alpha', shape=[1, self.size], initializer=tf.constant_initializer(-1 /(2 * self.max_val)), constraint=lambda z: tf.clip_by_value(z, -1/self.max_val + 1e-3, 1/self.max_val))
         #alpha = tf.constant(-0.015, shape=[1, self.size])
         q_values = linear(vf_latent_vector, 'q', self.size, init_scale=init_scale, init_bias=init_bias_vf)
         return self.proba_distribution_from_flat(rate, alpha), rate, q_values
 
     def proba_distribution_from_flat(self, rate, alpha):
-        return self.probability_distribution_class()(rate, alpha)
+        return self.probability_distribution_class()(rate, alpha, min_val=self.min_val, max_val=self.max_val)
 
     def param_shape(self):
         return [self.size]
@@ -623,14 +623,16 @@ class RLMPCProbabilityDistributionType(ProbabilityDistributionType):
     def probability_distribution_class(self):
         return RLMPCProbabilityDistribution
 
-    def proba_distribution_from_latent(self, pi_latent_vector, vf_latent_vector,  g_mean, g_std=1, init_scale=1.0, init_bias=0.0, init_bias_horizon=None, init_bias_vf=None, max_horizon=50.0):
+    def proba_distribution_from_latent(self, pi_latent_vector, vf_latent_vector,  g_mean, g_std=1, init_scale=1.0, init_bias=0.0, init_bias_horizon=None, init_bias_vf=None, max_horizon=50.0, min_horizon=1.0):
         if init_bias_vf is None:
             init_bias_vf = init_bias
         if init_bias_horizon is None:
             init_bias_horizon = init_bias
         etparam = linear(pi_latent_vector, 'pi/et', 1, init_scale=init_scale, init_bias=init_bias)
 
-        rate = tf.nn.relu(linear(pi_latent_vector, "pi/horizon_rate", 1, init_scale=init_scale, init_bias=init_bias_horizon))
+        #rate = tf.nn.relu(linear(pi_latent_vector, "pi/horizon_rate", 1, init_scale=init_scale, init_bias=init_bias_horizon))
+        rate = tf.nn.tanh(linear(pi_latent_vector, 'pi/horizon_rate', 1, init_scale=init_scale, init_bias=init_bias_horizon))
+        rate = (max_horizon - min_horizon) * (rate - (-1)) / (1 - (-1)) + min_horizon  # scale rate to (min, max) horizon
         alpha = tf.get_variable(name='pi/horizon_alpha', shape=[1, 1], initializer=tf.constant_initializer(-1 / (2 * max_horizon)),
                                 constraint=lambda z: tf.clip_by_value(z, -1 / max_horizon + 1e-3, 1 / max_horizon))
 
@@ -638,9 +640,9 @@ class RLMPCProbabilityDistributionType(ProbabilityDistributionType):
         g_param = tf.concat([g_mean, g_mean * 0.0 + logstd_0], axis=1)
 
         q_values = linear(vf_latent_vector, 'q', 1, init_scale=init_scale, init_bias=init_bias_vf)
-        return self.proba_distribution_from_flat(etparam, rate, alpha, g_param), tf.concat([etparam, rate, alpha, g_param], axis=1), q_values
+        return self.proba_distribution_from_flat(etparam, rate, alpha, g_param, max_horizon, min_horizon), tf.concat([etparam, rate, alpha, g_param], axis=1), q_values
 
-    def proba_distribution_from_flat(self, et, rate, alpha, g_flat):
+    def proba_distribution_from_flat(self, et, rate, alpha, g_flat, max_horizon=50.0, min_horizon=1.0):
         return self.probability_distribution_class()(et, rate, alpha, g_flat)
 
     def param_shape(self):
@@ -1015,7 +1017,7 @@ class GP0GeneralizedPoissonProbabilityDistribution(ProbabilityDistribution):   #
 
 
 class GeneralizedPoissonProbabilityDistribution(ProbabilityDistribution):   # GP-2 (Famoye, 1993/ Wang 1997)
-    def __init__(self, rate, alpha):
+    def __init__(self, rate, alpha, min_val=1.0, max_val=40.0):
         """
         Probability distributions from Bernoulli input
 
@@ -1023,7 +1025,8 @@ class GeneralizedPoissonProbabilityDistribution(ProbabilityDistribution):   # GP
         """
         self.rate = rate
         self.alpha = alpha
-        self.max = 40.0
+        self.min_val = min_val
+        self.max_val = max_val
         super(GeneralizedPoissonProbabilityDistribution, self).__init__()
 
     def flatparam(self):
@@ -1050,7 +1053,7 @@ class GeneralizedPoissonProbabilityDistribution(ProbabilityDistribution):   # GP
 
     def sample(self):  # Normal approximation for sampling
         samples_from_normal = tf.random_normal(tf.shape(self.rate))
-        return tf.clip_by_value(tf.floor(self.mean() + tf.sqrt(self.variance()) * samples_from_normal + 0.5), 0, self.max)  # TODO: not sure if correct to limit to max, but this solves nan problems in neglogp, perhaps better to use two tf wheres to give a value for when 1 + alpha *(x or rate) < 0
+        return tf.clip_by_value(tf.floor(self.mean() + tf.sqrt(self.variance()) * samples_from_normal + 0.5), self.min_val, self.max_val)  # TODO: not sure if correct to limit to max. No, it is correct because the distribution is only defined for 1 + alpha * sampled > 0.
 
     @classmethod
     def fromflat(cls, rate, dispersion):
@@ -1208,7 +1211,7 @@ class MixProbabilityDistribution(ProbabilityDistribution):
 
 
 class RLMPCProbabilityDistribution(ProbabilityDistribution):
-    def __init__(self, b_logits, horizon_rate, horizon_alpha, g_flat):
+    def __init__(self, b_logits, horizon_rate, horizon_alpha, g_flat, max_horizon=50.0, min_horizon=1.0):
         """
         Probability distributions from Mixed Distribution of Bernoulli and Gaussian input
 
@@ -1218,7 +1221,7 @@ class RLMPCProbabilityDistribution(ProbabilityDistribution):
         self.b_probabilities = tf.sigmoid(b_logits)
         self.g_flat = g_flat
 
-        self.horizon_gpd = GeneralizedPoissonProbabilityDistribution(horizon_rate, horizon_alpha)
+        self.horizon_gpd = GeneralizedPoissonProbabilityDistribution(horizon_rate, horizon_alpha, min_val=min_horizon, max_val=max_horizon)
 
         mean, logstd = tf.split(axis=len(g_flat.shape) - 1, num_or_size_splits=2, value=g_flat)
         self.g_mean = mean  # Need to modify mode and neglogp og Gaussian (by multiplying by et) so dont use Gaussian class
