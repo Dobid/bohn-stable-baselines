@@ -393,7 +393,7 @@ class GeneralizedPoissonProbabilityDistributionType(ProbabilityDistributionType)
         rate = tf.nn.tanh(linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias))
         rate = (self.max_val - self.min_val) * (rate - (-1)) / (1 - (-1)) + self.min_val  # scale rate to (min, max) horizon
         #rate = tf.nn.relu(linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias))
-        alpha = tf.get_variable(name='pi/alpha', shape=[1, self.size], initializer=tf.constant_initializer(-1 /(2 * self.max_val)), constraint=lambda z: tf.clip_by_value(z, -1/self.max_val + 1e-3, 1/self.max_val))
+        alpha = tf.get_variable(name='pi/alpha', shape=[1, self.size], initializer=tf.constant_initializer(-1 /(2 * self.max_val)), constraint=lambda z: tf.clip_by_value(z, -1/ (self.max_val + 1), 1/self.max_val))
         #alpha = tf.constant(-0.015, shape=[1, self.size])
         q_values = linear(vf_latent_vector, 'q', self.size, init_scale=init_scale, init_bias=init_bias_vf)
         return self.proba_distribution_from_flat(rate, alpha), rate, q_values
@@ -634,16 +634,16 @@ class RLMPCProbabilityDistributionType(ProbabilityDistributionType):
         rate = tf.nn.tanh(linear(pi_latent_vector, 'pi/horizon_rate', 1, init_scale=init_scale, init_bias=init_bias_horizon))
         rate = (max_horizon - min_horizon) * (rate - (-1)) / (1 - (-1)) + min_horizon  # scale rate to (min, max) horizon
         alpha = tf.get_variable(name='pi/horizon_alpha', shape=[1, 1], initializer=tf.constant_initializer(-1 / (2 * max_horizon)),
-                                constraint=lambda z: tf.clip_by_value(z, -1 / max_horizon + 1e-3, 1 / max_horizon))
+                                constraint=lambda z: tf.clip_by_value(z, -1 / (max_horizon + 1), 1 / max_horizon))
 
         logstd_0 = tf.get_variable(name='pi/lqr_logstd', initializer=tf.constant(np.log(g_std, dtype=np.float32), shape=[1, g_mean.shape[-1]]), trainable=True)  # TODO: consider changing to nontrainable
         g_param = tf.concat([g_mean, g_mean * 0.0 + logstd_0], axis=1)
 
         q_values = linear(vf_latent_vector, 'q', 1, init_scale=init_scale, init_bias=init_bias_vf)
-        return self.proba_distribution_from_flat(etparam, rate, alpha, g_param, max_horizon, min_horizon), tf.concat([etparam, rate, alpha, g_param], axis=1), q_values
+        return self.proba_distribution_from_flat(etparam, rate, alpha, g_param, max_horizon=max_horizon, min_horizon=min_horizon), tf.concat([etparam, rate, alpha, g_param], axis=1), q_values
 
     def proba_distribution_from_flat(self, et, rate, alpha, g_flat, max_horizon=50.0, min_horizon=1.0):
-        return self.probability_distribution_class()(et, rate, alpha, g_flat)
+        return self.probability_distribution_class()(et, rate, alpha, g_flat, max_horizon=max_horizon, min_horizon=min_horizon)
 
     def param_shape(self):
         return [self.size]
