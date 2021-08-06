@@ -216,6 +216,7 @@ class PPO2(ActorCriticRLModel):
                     if self.max_grad_norm is not None:
                         grads, _grad_norm = tf.clip_by_global_norm(grads, self.max_grad_norm)
                     grads = list(zip(grads, self.params))
+                    self.grads = grads
 
                 trainer = tf.train.AdamOptimizer(learning_rate=self.learning_rate_ph, epsilon=1e-5, beta1=0.9)
 
