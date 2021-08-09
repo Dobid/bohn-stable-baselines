@@ -623,15 +623,20 @@ class RLMPCProbabilityDistributionType(ProbabilityDistributionType):
     def probability_distribution_class(self):
         return RLMPCProbabilityDistribution
 
-    def proba_distribution_from_latent(self, pi_latent_vector, vf_latent_vector,  g_mean, g_std=1, init_scale=1.0, init_bias=0.0, init_bias_horizon=None, init_bias_vf=None, max_horizon=50.0, min_horizon=1.0):
+    def proba_distribution_from_latent(self, pi_latent_vector, vf_latent_vector,  g_mean, g_std=1, init_scale=1.0, init_bias=0.0, init_bias_horizon=None, init_bias_vf=None, max_horizon=50.0, min_horizon=1.0, horizon_latent_vector=None):
         if init_bias_vf is None:
             init_bias_vf = init_bias
         if init_bias_horizon is None:
             init_bias_horizon = init_bias
+
+        if horizon_latent_vector is None:
+            horizon_latent_vector = pi_latent_vector
+
         etparam = linear(pi_latent_vector, 'pi/et', 1, init_scale=init_scale, init_bias=init_bias)
 
         #rate = tf.nn.relu(linear(pi_latent_vector, "pi/horizon_rate", 1, init_scale=init_scale, init_bias=init_bias_horizon))
-        rate = tf.nn.tanh(linear(pi_latent_vector, 'pi/horizon_rate', 1, init_scale=init_scale, init_bias=init_bias_horizon))
+        rate = tf.tanh(linear(horizon_latent_vector, 'pi/horizon_rate', 1, init_scale=init_scale, init_bias=init_bias_horizon))
+
         rate = (max_horizon - min_horizon) * (rate - (-1)) / (1 - (-1)) + min_horizon  # scale rate to (min, max) horizon
         alpha = tf.get_variable(name='pi/horizon_alpha', shape=[1, 1], initializer=tf.constant_initializer(-1 / (2 * max_horizon)),
                                 constraint=lambda z: tf.clip_by_value(z, -1 / (max_horizon + 1), 1 / max_horizon))

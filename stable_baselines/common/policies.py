@@ -89,7 +89,7 @@ def cnn_mlp_extractor(obs, net_arch, act_fun, obs_module_indices=None, dual_crit
     return pi_mlp, vf_mlp
 
 
-def mlp_extractor(flat_observations, net_arch, act_fun, obs_module_indices=None, dual_critic=False):
+def mlp_extractor(flat_observations, net_arch, act_fun, obs_module_indices=None, dual_critic=False, name=""):
     """
     Constructs an MLP that receives observations as an input and outputs a latent representation for the policy and
     a value network. The ``net_arch`` parameter allows to specify the amount and size of the hidden layers and how many
@@ -148,13 +148,13 @@ def mlp_extractor(flat_observations, net_arch, act_fun, obs_module_indices=None,
     for idx, (pi_layer_size, vf_layer_size) in enumerate(zip_longest(policy_only_layers, value_only_layers)):
         if pi_layer_size is not None:
             assert isinstance(pi_layer_size, int), "Error: net_arch[-1]['pi'] must only contain integers."
-            latent_policy = act_fun(linear(latent_policy, "pi_fc{}".format(idx), pi_layer_size, init_scale=np.sqrt(2)), name="pi_fc{}_tanh".format(idx))
+            latent_policy = act_fun(linear(latent_policy, "pi{}_fc{}".format(name, idx), pi_layer_size, init_scale=np.sqrt(2)), name="pi{}_fc{}_act".format(name, idx))
 
         if vf_layer_size is not None:
             assert isinstance(vf_layer_size, int), "Error: net_arch[-1]['vf'] must only contain integers."
-            latent_value = act_fun(linear(latent_value, "vf_fc{}".format(idx), vf_layer_size, init_scale=np.sqrt(2)), name="vf_fc{}_tanh".format(idx))
+            latent_value = act_fun(linear(latent_value, "vf{}_fc{}".format(name, idx), vf_layer_size, init_scale=np.sqrt(2)), name="vf{}_fc{}_act".format(name, idx))
             if dual_critic:
-                latent_value_d = act_fun(linear(latent_value_d, "vf_d_fc{}".format(idx), vf_layer_size, init_scale=np.sqrt(2)), name="vf_d_fc{}_tanh".format(idx))
+                latent_value_d = act_fun(linear(latent_value_d, "vf{}_d_fc{}".format(name, idx), vf_layer_size, init_scale=np.sqrt(2)), name="vf{}_d_fc{}_act".format(name, idx))
 
     if dual_critic:
         return latent_policy, latent_value, latent_value_d
@@ -1064,6 +1064,7 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
                     latents = cnn_mlp_extractor(et_obs, net_arch, act_fun, **kwargs)
                 else:
                     latents = mlp_extractor(tf.layers.flatten(et_obs), net_arch, act_fun, **kwargs)
+                    horizon_latent, _ = mlp_extractor(tf.layers.flatten(et_obs), [{"pi": net_arch[0]["pi"]}], act_fun, name="_horizon", **kwargs)
 
                 pi_latent, vf_latent = latents
         with tf.variable_scope("model", reuse=reuse, use_resource=True):
@@ -1098,7 +1099,7 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
 
             self._proba_distribution, self._policy, self.q_value = \
                 self.pdtype.proba_distribution_from_latent(pi_latent, vf_latent, self.lqr_output, g_std=std, init_scale=init_scale,
-                                                           init_bias=init_bias, init_bias_vf=init_bias_vf, init_bias_horizon=init_bias_horizon, max_horizon=max_horizon) # TODO: try horizon output as tanh and multiply by limits
+                                                           init_bias=init_bias, init_bias_vf=init_bias_vf, init_bias_horizon=init_bias_horizon, max_horizon=max_horizon, horizon_latent_vector=horizon_latent) # TODO: try horizon output as tanh and multiply by limits
 
         if False:
             with tf.variable_scope("model", reuse=True):
