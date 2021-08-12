@@ -703,19 +703,23 @@ class Runner(AbstractEnvRunner):
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
         last_values = self.model.value(self.obs, self.states, self.dones)
+
+
         # discount/bootstrap off value fn
         mb_advs = np.zeros_like(mb_rewards)
         true_reward = np.copy(mb_rewards)
+        self.env_terms = mb_envterms
         last_gae_lam = 0
+
         for step in reversed(range(self.n_steps)):
             if step == self.n_steps - 1:
-                if self.time_aware:
+                if self.time_aware and False:  # i dont think this works
                     nextnonterminal = 1.0 - env_terms
                 else:
                     nextnonterminal = 1.0 - self.dones
                 nextvalues = last_values
             else:
-                if self.time_aware:
+                if self.time_aware and False:  # i dont think this works
                     nextnonterminal = 1.0 - mb_envterms[step + 1]
                 else:
                     nextnonterminal = 1.0 - mb_dones[step + 1]
@@ -734,6 +738,34 @@ class Runner(AbstractEnvRunner):
             #self.model.act_model.d_actions = swap_and_flatten(np.array(self.model.act_model.d_actions))
 
         return mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_states, ep_infos, true_reward
+
+    def get_advantages(self, rewards, values, dones, last_values):
+        def deswap_and_flatten(vec):
+            vec = vec.reshape(self.n_envs, self.n_steps)
+            return vec.swapaxes(0, 1)
+        last_gae_lam = 0
+        if len(rewards.shape) == 1:
+            rewards = deswap_and_flatten(rewards)
+            values = deswap_and_flatten(values)
+            dones = deswap_and_flatten(dones)
+        advs = np.zeros_like(rewards)
+        for step in reversed(range(self.n_steps)):
+            if step == self.n_steps - 1:
+                if self.time_aware:
+                    nextnonterminal = 1.0 - self.env_terms[-1]
+                else:
+                    nextnonterminal = 1.0 - self.dones
+                nextvalues = last_values
+            else:
+                if self.time_aware:
+                    nextnonterminal = 1.0 - self.env_terms[step + 1]
+                else:
+                    nextnonterminal = 1.0 - dones[step + 1]
+                nextvalues = values[step + 1]
+            delta = rewards[step] + self.gamma * nextvalues * nextnonterminal - values[step]
+            advs[step] = last_gae_lam = delta + self.gamma * self.lam * nextnonterminal * last_gae_lam
+
+        return advs
 
 
 # obs, returns, masks, actions, values, neglogpacs, states = runner.run()
