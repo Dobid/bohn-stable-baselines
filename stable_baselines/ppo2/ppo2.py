@@ -427,6 +427,11 @@ class PPO2(ActorCriticRLModel):
                     try:
                         for epoch_num in range(self.noptepochs):
                             np.random.shuffle(inds)
+                            if epoch_num > 0:  # recompute advantages on every epoch
+                                values = self.act_model.value(obs)
+                                last_values = self.act_model.value(self.runner.obs)
+                                new_advs = swap_and_flatten(self.runner.get_advantages(true_reward, values, masks, last_values))
+                                returns = new_advs + values
                             for start in range(0, self.n_batch, batch_size):
                                 timestep = self.num_timesteps // update_fac + ((epoch_num *
                                                                                 self.n_batch + start) // batch_size)
