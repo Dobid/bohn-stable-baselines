@@ -386,17 +386,22 @@ class GeneralizedPoissonProbabilityDistributionType(ProbabilityDistributionType)
     def probability_distribution_class(self):
         return GeneralizedPoissonProbabilityDistribution
 
-    def proba_distribution_from_latent(self, pi_latent_vector, vf_latent_vector, init_scale=1.0, init_bias=0.0,
-                                       init_bias_vf=None):
+    def proba_distribution_from_latent(self, pi_latent_vector, vf_latent_vector, init_scale=1.0, init_bias=0.0, init_bias_vf=None):
         if init_bias_vf is None:
             init_bias_vf = init_bias
-        rate = tf.nn.tanh(linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias))
+
+        w_scale = (self.max_val - self.min_val) * (1 - (-1)) / (1 - (-1)) * 0.5
+        #rate, rate_w = linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias, return_w=True)#, regularizer=tf.contrib.layers.l2_regularizer(tf.constant(1e-2, dtype=tf.float32))))
+        rate = linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias, w_scale=w_scale)
+        rate = tf.tanh(rate)
         rate = (self.max_val - self.min_val) * (rate - (-1)) / (1 - (-1)) + self.min_val  # scale rate to (min, max) horizon
         #rate = tf.nn.relu(linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias))
-        alpha = tf.get_variable(name='pi/alpha', shape=[1, self.size], initializer=tf.constant_initializer(-1 /(2 * self.max_val)), constraint=lambda z: tf.clip_by_value(z, -1/ (self.max_val + 1), 1/self.max_val))
+        alpha = tf.get_variable(name='pi/alpha', shape=[1, self.size], initializer=tf.constant_initializer(-1 /(2 * self.max_val)), constraint=lambda z: tf.clip_by_value(z, -1/ (self.max_val + 1), 1/self.max_val), trainable=False)
         #alpha = tf.constant(-0.015, shape=[1, self.size])
         q_values = linear(vf_latent_vector, 'q', self.size, init_scale=init_scale, init_bias=init_bias_vf)
-        return self.proba_distribution_from_flat(rate, alpha), rate, q_values
+        pb_dist = self.proba_distribution_from_flat(rate, alpha)
+        #pb_dist.rate_w = rate_w
+        return pb_dist, rate, q_values
 
     def proba_distribution_from_flat(self, rate, alpha):
         return self.probability_distribution_class()(rate, alpha, min_val=self.min_val, max_val=self.max_val)
@@ -1047,7 +1052,7 @@ class GeneralizedPoissonProbabilityDistribution(ProbabilityDistribution):   # GP
         return tf.ceil(self.mean())
 
     def neglogp(self, x):  # TODO: can maybe even remove the last term since it doesnt depend on the model parameters
-        return -tf.reduce_sum(x * tf.log(self.rate / (1 + self.alpha * self.rate)) + (x - 1) * tf.log(1 + self.alpha * x) - (self.rate * (1 + self.alpha * x) / (1 + self.alpha * self.rate)), axis=-1)# - tf.lgamma(x + 1), axis=-1)
+        return -tf.reduce_sum(x * tf.log(self.rate / (1 + self.alpha * self.rate)) + (x - 1) * tf.log(1 + self.alpha * x) - (self.rate * (1 + self.alpha * x) / (1 + self.alpha * self.rate)) - tf.lgamma(x + 1), axis=-1)
 
     def kl(self, other):
         raise NotImplementedError
