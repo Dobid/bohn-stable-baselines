@@ -107,7 +107,7 @@ def conv(input_tensor, scope, *, n_filters, filter_size, stride,
         return bias + tf.nn.conv2d(input_tensor, weight, strides=strides, padding=pad, data_format=data_format)
 
 
-def linear(input_tensor, scope, n_hidden, *, init_scale=1.0, init_bias=0.0):
+def linear(input_tensor, scope, n_hidden, *, init_scale=1.0, init_bias=0.0, w_scale=None, return_w=False, **w_kw):
     """
     Creates a fully connected layer for TensorFlow
 
@@ -120,9 +120,16 @@ def linear(input_tensor, scope, n_hidden, *, init_scale=1.0, init_bias=0.0):
     """
     with tf.variable_scope(scope):
         n_input = input_tensor.get_shape()[1].value
-        weight = tf.get_variable("w", [n_input, n_hidden], initializer=ortho_init(init_scale))
+        weight = tf.get_variable("w", [n_input, n_hidden], initializer=ortho_init(init_scale), **w_kw)
         bias = tf.get_variable("b", [n_hidden], initializer=tf.constant_initializer(init_bias))
-        return tf.matmul(input_tensor, weight) + bias
+        if w_scale is not None:
+            return tf.matmul(input_tensor, weight) / w_scale + bias
+        else:
+            if return_w:
+                wmul = tf.matmul(input_tensor, weight)
+                return wmul + bias, wmul
+            else:
+                return tf.matmul(input_tensor, weight) + bias
 
 
 def lstm(input_tensor, mask_tensor, cell_state_hidden, scope, n_hidden, init_scale=1.0, layer_norm=False):
