@@ -54,7 +54,7 @@ class PPO2(ActorCriticRLModel):
     """
     def __init__(self, policy, env, gamma=0.99, n_steps=128, ent_coef=0.01, learning_rate=2.5e-4, vf_coef=0.5,
                  max_grad_norm=0.5, lam=0.95, nminibatches=4, noptepochs=4, cliprange=0.2, target_kl=None, cliprange_vf=None,
-                 verbose=0, tensorboard_log=None, _init_setup_model=True, policy_kwargs=None, time_aware=False,
+                 verbose=0, spatial_CAPS_coef=None, temporal_CAPS_coef=None, tensorboard_log=None, _init_setup_model=True, policy_kwargs=None, time_aware=False,
                  full_tensorboard_log=False, seed=None, n_cpu_tf_sess=None):
 
         self.learning_rate = learning_rate
@@ -71,6 +71,9 @@ class PPO2(ActorCriticRLModel):
         self.tensorboard_log = tensorboard_log
         self.full_tensorboard_log = full_tensorboard_log
         self.target_kl = target_kl
+
+        self.spatial_CAPS_coef = spatial_CAPS_coef
+        self.temporal_CAPS_coef = temporal_CAPS_coef
         
         self.time_aware = time_aware
         self.action_ph = None
@@ -145,6 +148,14 @@ class PPO2(ActorCriticRLModel):
                                               self.n_envs // self.nminibatches, self.n_steps, n_batch_train,
                                               reuse=True, **self.policy_kwargs)
 
+                    if self.spatial_CAPS_coef is not None:
+                        self.train_model_scasp = self.policy(self.sess, self.observation_space, self.action_space,
+                                                  self.n_envs // self.nminibatches, self.n_steps, n_batch_train,
+                                                  reuse=True, **self.policy_kwargs)
+                    if self.temporal_CAPS_coef is not None:
+                        self.train_model_tcasp = self.policy(self.sess, self.observation_space, self.action_space,
+                                               self.n_envs // self.nminibatches, self.n_steps, n_batch_train,
+                                               reuse=True, **self.policy_kwargs)
                 with tf.variable_scope("loss", reuse=False):
                     self.action_ph = train_model.pdtype.sample_placeholder([None], name="action_ph")
                     self.advs_ph = tf.placeholder(tf.float32, [None], name="advs_ph")
@@ -198,6 +209,14 @@ class PPO2(ActorCriticRLModel):
                                                                       self.clip_range_ph), tf.float32))
 
                     loss = self.pg_loss - self.entropy * self.ent_coef_ph + self.vf_loss * self.vf_coef
+
+                    # CAPS
+                    if self.spatial_CAPS_coef is not None:
+                        spatial_CAPS = self.spatial_CAPS_coef * tf.nn.l2_loss(train_model.policy - self.train_model_scasp.policy, name="spatial_CAPS_loss")
+                        loss += spatial_CAPS
+                    if self.temporal_CAPS_coef is not None:
+                        temporal_CAPS = self.temporal_CAPS_coef * tf.nn.l2_loss(train_model.policy - self.train_model_tcasp.policy, name="temporal_CAPS_loss")
+                        loss += temporal_CAPS
                     #loss = self.pg_loss + self.vf_loss * self.vf_coef
 
                     tf.summary.scalar('entropy_loss', self.entropy)
@@ -253,6 +272,11 @@ class PPO2(ActorCriticRLModel):
                     if self.clip_range_vf_ph is not None:
                         tf.summary.scalar('clip_range_vf', tf.reduce_mean(self.clip_range_vf_ph))
                     tf.summary.scalar("explained_variance", tf.reduce_mean(1 - tf.math.reduce_variance(vpred - self.rewards_ph) / tf.math.reduce_variance(self.rewards_ph)))
+
+                    if self.spatial_CAPS_coef is not None:
+                        tf.summary.scalar("spatial_CAPS_loss", spatial_CAPS)
+                    if self.temporal_CAPS_coef is not None:
+                        tf.summary.scalar("temporal_CAPS_loss", temporal_CAPS)
 
                     tf.summary.scalar('old_neglog_action_probability', tf.reduce_mean(self.old_neglog_pac_ph))
                     tf.summary.scalar('old_value_pred', tf.reduce_mean(self.old_vpred_ph))
@@ -327,6 +351,15 @@ class PPO2(ActorCriticRLModel):
             else:
                 td_map[self.train_model.lqr_K_ph] = self.train_model.lqr.K_num
                 td_map[self.train_model.lqr_K_grad_ph] = np.transpose(self.train_model.lqr._grad_K(), (2, 0, 1))
+
+
+        if self.spatial_CAPS_coef is not None:
+            td_map[self.train_model_scasp.obs_ph] = np.random.normal(obs, 0.01)  # TODO: fix for LQR
+
+        if self.temporal_CAPS_coef is not None:
+            tp1_mbinds = self.mbinds
+            tp1_mbinds[(self.mbinds < self.n_batch - 1) & (self.mbinds % len(self.mbinds) != 0)] += 1
+            td_map[self.train_model_tcasp.obs_ph] = self.train_model_tcasp.obss[tp1_mbinds]
 
         if states is None:
             update_fac = max(self.n_batch // self.nminibatches // self.noptepochs, 1)
@@ -418,6 +451,10 @@ class PPO2(ActorCriticRLModel):
                 if getattr(self, "action_hist_sum", None) is not None:
                     action_hist_sum = self.sess.run(self.action_hist_sum, {self.action_ph: actions})
                     writer.add_summary(action_hist_sum, self.num_timesteps)
+
+                if self.temporal_CAPS_coef is not None:
+                    self.train_model_tcasp.obss = obs
+
 
                 self.ep_info_buf.extend(ep_infos)
                 mb_loss_vals = []
