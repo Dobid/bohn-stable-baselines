@@ -106,6 +106,7 @@ class LinearSchedule(Schedule):
 
     def value(self, fraction):
         #fraction = min(float(step) / self.schedule_timesteps, 1.0)
+        fraction = min(max(fraction, 0), 1)
         return self.initial_p + fraction * (self.final_p - self.initial_p)
 
     def __call__(self, *args, **kwargs):
