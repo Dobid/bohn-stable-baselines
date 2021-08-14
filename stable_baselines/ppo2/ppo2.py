@@ -788,13 +788,13 @@ class Runner(AbstractEnvRunner):
         advs = np.zeros_like(rewards)
         for step in reversed(range(self.n_steps)):
             if step == self.n_steps - 1:
-                if self.time_aware:
+                if self.time_aware and False:
                     nextnonterminal = 1.0 - self.env_terms[-1]
                 else:
                     nextnonterminal = 1.0 - self.dones
                 nextvalues = last_values
             else:
-                if self.time_aware:
+                if self.time_aware and False:
                     nextnonterminal = 1.0 - self.env_terms[step + 1]
                 else:
                     nextnonterminal = 1.0 - dones[step + 1]
