@@ -390,13 +390,14 @@ class GeneralizedPoissonProbabilityDistributionType(ProbabilityDistributionType)
         if init_bias_vf is None:
             init_bias_vf = init_bias
 
-        w_scale = (self.max_val - self.min_val) * (1 - (-1)) / (1 - (-1)) * 0.5
+        w_scale = 0.5 * (self.max_val - self.min_val) * (1 - (-1)) / (1 - (-1))
         #rate, rate_w = linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias, return_w=True)#, regularizer=tf.contrib.layers.l2_regularizer(tf.constant(1e-2, dtype=tf.float32))))
-        rate = linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias, w_scale=w_scale)
+        #rate = linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias, w_scale=w_scale)
+        rate = linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias)
         rate = tf.tanh(rate)
         rate = (self.max_val - self.min_val) * (rate - (-1)) / (1 - (-1)) + self.min_val  # scale rate to (min, max) horizon
         #rate = tf.nn.relu(linear(pi_latent_vector, 'pi/rate', self.size, init_scale=init_scale, init_bias=init_bias))
-        alpha = tf.get_variable(name='pi/alpha', shape=[1, self.size], initializer=tf.constant_initializer(-1 /(self.max_val + 1)), constraint=lambda z: tf.clip_by_value(z, -1/ (self.max_val + 1), 1/self.max_val), trainable=False)
+        alpha = tf.get_variable(name='pi/alpha', shape=[1, self.size], initializer=tf.constant_initializer(-1 /( 2 * self.max_val)), constraint=lambda z: tf.clip_by_value(z, -1/ (self.max_val + 1), 1/self.max_val), trainable=False)
         #alpha = tf.constant(-0.015, shape=[1, self.size])
         q_values = linear(vf_latent_vector, 'q', self.size, init_scale=init_scale, init_bias=init_bias_vf)
         pb_dist = self.proba_distribution_from_flat(rate, alpha)
