@@ -54,7 +54,7 @@ class PPO2(ActorCriticRLModel):
     """
     def __init__(self, policy, env, gamma=0.99, n_steps=128, ent_coef=0.01, learning_rate=2.5e-4, vf_coef=0.5,
                  max_grad_norm=0.5, lam=0.95, nminibatches=4, noptepochs=4, cliprange=0.2, target_kl=None, cliprange_vf=None,
-                 verbose=0, spatial_CAPS_coef=None, temporal_CAPS_coef=None, tensorboard_log=None, _init_setup_model=True, policy_kwargs=None, time_aware=False,
+                 verbose=0, spatial_CAPS_coef=None, temporal_CAPS_coef=None, CAPS_idxs=None, frame_skip=None, tensorboard_log=None, _init_setup_model=True, policy_kwargs=None, time_aware=False,
                  full_tensorboard_log=False, seed=None, n_cpu_tf_sess=None):
 
         self.learning_rate = learning_rate
@@ -74,6 +74,7 @@ class PPO2(ActorCriticRLModel):
 
         self.spatial_CAPS_coef = spatial_CAPS_coef
         self.temporal_CAPS_coef = temporal_CAPS_coef
+        self.frame_skip = frame_skip
         
         self.time_aware = time_aware
         self.action_ph = None
@@ -108,7 +109,7 @@ class PPO2(ActorCriticRLModel):
 
     def _make_runner(self):
         return Runner(env=self.env, model=self, n_steps=self.n_steps,
-                      gamma=self.gamma, lam=self.lam, time_aware=self.time_aware)
+                      gamma=self.gamma, lam=self.lam, time_aware=self.time_aware, frame_skip=self.frame_skip)
 
     def _get_pretrain_placeholders(self, get_vf=False):
         policy = self.act_model
@@ -639,7 +640,7 @@ class PPO2(ActorCriticRLModel):
 
 
 class Runner(AbstractEnvRunner):
-    def __init__(self, *, env, model, n_steps, gamma, lam, time_aware=False):
+    def __init__(self, *, env, model, n_steps, gamma, lam, time_aware=False, frame_skip=None):
         """
         A runner to learn the policy of an environment for a model
 
@@ -653,6 +654,7 @@ class Runner(AbstractEnvRunner):
         self.lam = lam
         self.gamma = gamma
         self.time_aware = time_aware
+        self.frame_skip = frame_skip
         if getattr(model.act_model, "time_varying", False):  # TODO: fix for n_envs > 1
             systems = env.env_method("get_linearized_mpc_model_over_prediction")
             model.act_model.lqr.set_numeric_value({"A": [s[0] for s in systems], "B": [s[1] for s in systems]})
@@ -683,7 +685,13 @@ class Runner(AbstractEnvRunner):
         ep_infos = []
 
         for _ in range(self.n_steps):
-            actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
+            if self.frame_skip is not None and _ % self.frame_skip != 0:
+                _, values, self.states, _ = self.model.step(self.obs, self.states, self.dones)
+                #neglogpacs = self.model.sess.run(self.model.neglogpac, {self.model.train_model.obs_ph: self.obs, self.model.action_ph: actions})
+            else:
+                if self.frame_skip is not None:
+                    self.obs[:, :self.obs.shape[1] // 2] = self.obs[:, self.obs.shape[1] // 2:]
+                actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
@@ -693,8 +701,12 @@ class Runner(AbstractEnvRunner):
             # Clip the actions to avoid out of bound error
             if isinstance(self.env.action_space, gym.spaces.Box):
                 clipped_actions = np.clip(actions, self.env.action_space.low, self.env.action_space.high)
-            self.obs[:], rewards, self.dones, infos = self.env.step(clipped_actions)
-            if getattr(self.model.train_model, "time_varying", False):
+            if self.frame_skip:
+                newobs, rewards, self.dones, infos = self.env.step(clipped_actions)
+                self.obs[:, self.obs.shape[1] // 2:] = newobs[:, self.obs.shape[1] // 2:]
+            else:
+                self.obs[:], rewards, self.dones, infos = self.env.step(clipped_actions)
+            if getattr(self.model.train_model, "time_varying", False) or getattr(self.model.act_model, "train_mpc_value_fn", False):
                 system_idxs = []
                 for i in range(self.n_envs):
                     if self.dones[i] or "As" in infos[i]:
