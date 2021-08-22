@@ -149,11 +149,6 @@ class PPO2(ActorCriticRLModel):
                                               self.n_envs // self.nminibatches, self.n_steps, n_batch_train,
                                               reuse=True, **self.policy_kwargs)
 
-                    if self.frame_skip:
-                        self.train_model_v = self.policy(self.sess, self.observation_space, self.action_space,
-                                              self.n_envs // self.nminibatches, self.n_steps, n_batch_train,
-                                              reuse=True, **self.policy_kwargs)
-
                     if self.spatial_CAPS_coef is not None:
                         self.train_model_scasp = self.policy(self.sess, self.observation_space, self.action_space,
                                                   self.n_envs // self.nminibatches, self.n_steps, n_batch_train,
@@ -175,10 +170,7 @@ class PPO2(ActorCriticRLModel):
                     neglogpac = train_model.proba_distribution.neglogp(self.action_ph)
                     self.entropy = tf.reduce_mean(train_model.proba_distribution.entropy())
 
-                    if self.frame_skip:
-                        vpred = self.train_model_v.value_flat
-                    else:
-                        vpred = train_model.value_flat
+                    vpred = train_model.value_flat
 
                     # Value function clipping: not present in the original PPO
                     if self.cliprange_vf is None:
@@ -196,10 +188,7 @@ class PPO2(ActorCriticRLModel):
 
                     if self.clip_range_vf_ph is None:
                         # No clipping
-                        if self.frame_skip:
-                            vpred_clipped = self.train_model_v.value_flat
-                        else:
-                            vpred_clipped = train_model.value_flat
+                        vpred_clipped = train_model.value_flat
                     else:
                         # Clip the different between old and new value
                         # NOTE: this depends on the reward scaling
@@ -373,21 +362,16 @@ class PPO2(ActorCriticRLModel):
             tp1_mbinds[(self.mbinds < self.n_batch - 1) & (self.mbinds % len(self.mbinds) != 0)] += 1
             td_map[self.train_model_tcasp.obs_ph] = self.train_model_tcasp.obss[tp1_mbinds]
 
-        if self.frame_skip is not None:
-            td_map[self.rewards_ph] = self.train_model.rewards_n
-            td_map[self.old_vpred_ph] = self.train_model.values
-            td_map[self.train_model_v.obs_ph] = self.train_model.vf_obs
-
         if states is None:
             update_fac = max(self.n_batch // self.nminibatches // self.noptepochs, 1)
         else:
             update_fac = max(self.n_batch // self.nminibatches // self.noptepochs // self.n_steps, 1)
 
 
-        #grads = self.sess.run([v[0] for v in self.grads if v[0] is not None], td_map)
-        #for g_i, g in enumerate(grads):
-        #    if np.any(np.isnan(g)):
-        #        print("Grad is nan for: {}".format(self.grads[g_i][1].name))
+        grads = self.sess.run([v[0] for v in self.grads if v[0] is not None], td_map)
+        for g_i, g in enumerate(grads):
+            if np.any(np.isnan(g)):
+                print("Grad is nan for: {}".format(self.grads[g_i][1].name))
 
         if writer is not None:
             # run loss backprop with summary, but once every 10 runs save the metadata (memory, compute time, ...)
@@ -700,18 +684,14 @@ class Runner(AbstractEnvRunner):
         mb_states = self.states
         ep_infos = []
 
-        self.model.train_model.vf_obs = []
-        self.model.train_model.values = []
-        self.model.train_model.rewards_n = []
-
         for _ in range(self.n_steps):
             if self.frame_skip is not None and _ % self.frame_skip != 0:
-                __, values, self.states, __ = self.model.step(self.obs, self.states, self.dones)
+                _, values, self.states, _ = self.model.step(self.obs, self.states, self.dones)
                 #neglogpacs = self.model.sess.run(self.model.neglogpac, {self.model.train_model.obs_ph: self.obs, self.model.action_ph: actions})
             else:
+                if self.frame_skip is not None:
+                    self.obs[:, :self.obs.shape[1] // 2] = self.obs[:, self.obs.shape[1] // 2:]
                 actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
-                self.model.train_model.vf_obs.append(self.obs.copy())
-                self.model.train_model.values.append(values.copy())
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
@@ -722,12 +702,8 @@ class Runner(AbstractEnvRunner):
             if isinstance(self.env.action_space, gym.spaces.Box):
                 clipped_actions = np.clip(actions, self.env.action_space.low, self.env.action_space.high)
             if self.frame_skip:
-                self.obs, rewards, self.dones, infos = self.env.step(clipped_actions)
-                if _ > 0 and _ % self.frame_skip != 0:  # TODO: does not treat dones
-                    self.model.train_model.rewards_n[-1] += rewards
-                else:
-                    self.model.train_model.rewards_n.append(np.copy(rewards))
-                #self.obs[:, self.obs.shape[1] // 2:] = newobs[:, self.obs.shape[1] // 2:]
+                newobs, rewards, self.dones, infos = self.env.step(clipped_actions)
+                self.obs[:, self.obs.shape[1] // 2:] = newobs[:, self.obs.shape[1] // 2:]
             else:
                 self.obs[:], rewards, self.dones, infos = self.env.step(clipped_actions)
             if getattr(self.model.train_model, "time_varying", False) or getattr(self.model.act_model, "train_mpc_value_fn", False):
@@ -809,12 +785,6 @@ class Runner(AbstractEnvRunner):
 
             #self.model.act_model.origKs = swap_and_flatten(np.array(self.model.act_model.origKs))
             #self.model.act_model.d_actions = swap_and_flatten(np.array(self.model.act_model.d_actions))
-
-        if self.frame_skip is not None:
-            self.model.train_model.vf_obs = swap_and_flatten(np.array(self.model.train_model.vf_obs))
-            self.model.train_model.values = swap_and_flatten(np.array(self.model.train_model.values))
-            self.model.train_model.rewards_n = swap_and_flatten(np.array(self.model.train_model.rewards_n))
-            self.model.train_model.rewards_n = mb_returns[::self.frame_skip]
 
         return mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_states, ep_infos, true_reward
 
