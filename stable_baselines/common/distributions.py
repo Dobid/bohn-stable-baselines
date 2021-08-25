@@ -640,12 +640,12 @@ class RLMPCProbabilityDistributionType(ProbabilityDistributionType):
 
         etparam = linear(pi_latent_vector, 'pi/et', 1, init_scale=init_scale, init_bias=init_bias)
 
+        #w_scale = 0.5 * (max_horizon - min_horizon) * (1 - (-1)) / (1 - (-1))
         #rate = tf.nn.relu(linear(pi_latent_vector, "pi/horizon_rate", 1, init_scale=init_scale, init_bias=init_bias_horizon))
-        rate = tf.tanh(linear(horizon_latent_vector, 'pi/horizon_rate', 1, init_scale=init_scale, init_bias=init_bias_horizon))
-
+        rate = tf.tanh(linear(horizon_latent_vector, 'pi/horizon_rate', 1, init_scale=init_scale, init_bias=init_bias_horizon))#, w_scale=w_scale))
         rate = (max_horizon - min_horizon) * (rate - (-1)) / (1 - (-1)) + min_horizon  # scale rate to (min, max) horizon
         alpha = tf.get_variable(name='pi/horizon_alpha', shape=[1, 1], initializer=tf.constant_initializer(-1 / (2 * max_horizon)),
-                                constraint=lambda z: tf.clip_by_value(z, -1 / (max_horizon + 1), 1 / max_horizon))
+                                constraint=lambda z: tf.clip_by_value(z, -1 / (max_horizon + 1), 1 / max_horizon), trainable=True)
 
         logstd_0 = tf.get_variable(name='pi/lqr_logstd', initializer=tf.constant(np.log(g_std, dtype=np.float32), shape=[1, g_mean.shape[-1]]), trainable=True)  # TODO: consider changing to nontrainable
         g_param = tf.concat([g_mean, g_mean * 0.0 + logstd_0], axis=1)
@@ -1239,6 +1239,8 @@ class RLMPCProbabilityDistribution(ProbabilityDistribution):
         self.g_logstd = logstd
         self.g_std = tf.exp(logstd)
 
+        self.include_horizon_neglogp = True
+
         super(RLMPCProbabilityDistribution, self).__init__()
 
     def flatparam(self):
@@ -1250,17 +1252,20 @@ class RLMPCProbabilityDistribution(ProbabilityDistribution):
 
     def neglogp(self, x):  # TODO: should it be positive/negative (or both?).
         et, horizon, u = x[:, 0], tf.expand_dims(x[:, 1], 1), x[:, 2:]
-        etneglogp = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.b_logits,
+        self.etneglogp = etneglogp = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.b_logits,
                                                                           labels=tf.expand_dims(et, 1), name="etneglogp"),
                              axis=-1)
 
-        horizonneglogp = self.horizon_gpd.neglogp(horizon) * et  # TODO: should it be zero when not recomputing? And should it simply be added?
-
-        g_neglogp = 0.5 * tf.reduce_sum(tf.square((u - self.g_mean * (1 - tf.expand_dims(et, 1))) / self.g_std), axis=-1) \
+        self.g_neglogp = g_neglogp = 0.5 * tf.reduce_sum(tf.square((u - self.g_mean * (1 - tf.expand_dims(et, 1))) / self.g_std), axis=-1) \
                + 0.5 * np.log(2.0 * np.pi) * tf.cast(tf.shape(u)[-1], tf.float32) \
                + tf.reduce_sum(self.g_logstd, axis=-1)
 
-        return etneglogp + horizonneglogp + g_neglogp
+        if self.include_horizon_neglogp:
+            self.horizonneglogp = horizonneglogp = self.horizon_gpd.neglogp(horizon)  # TODO: should it be zero when not recomputing? And should it simply be added?
+
+            return etneglogp + horizonneglogp + g_neglogp
+        else:
+            return etneglogp + g_neglogp
 
     def kl(self, other):
         raise NotImplementedError
@@ -1271,11 +1276,15 @@ class RLMPCProbabilityDistribution(ProbabilityDistribution):
 
     def entropy(self):  # TODO: might be overestimating (i.e. counting mutual information between distributions several times). Can it be negative?
         et_ent = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.b_logits,
-                                                                     labels=self.b_probabilities), axis=-1)
-        et = tf.round(self.b_probabilities)
-        horizon_ent = self.horizon_gpd.entropy() * et
-        g_ent = tf.reduce_sum(self.g_logstd + .5 * np.log(2.0 * np.pi * np.e), axis=-1) * (1 - et)
-        return et_ent + horizon_ent + g_ent
+                                                                       labels=self.b_probabilities), axis=-1)
+        #et = tf.round(self.b_probabilities)
+
+        g_ent = tf.reduce_sum(self.g_logstd + .5 * np.log(2.0 * np.pi * np.e), axis=-1)# * (1 - et)
+        if self.include_horizon_neglogp:
+            horizon_ent = self.horizon_gpd.entropy()  # * et
+            return et_ent + horizon_ent + g_ent
+        else:
+            return et_ent + g_ent
 
     def sample(self):
         samples_from_uniform = tf.random_uniform(tf.shape(self.b_probabilities))
