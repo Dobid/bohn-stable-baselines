@@ -7,7 +7,7 @@ import tensorflow as tf
 from stable_baselines import logger
 from stable_baselines.common import explained_variance, ActorCriticRLModel, tf_util, SetVerbosity, TensorboardWriter
 from stable_baselines.common.runners import AbstractEnvRunner
-from stable_baselines.common.policies import ActorCriticPolicy, RecurrentActorCriticPolicy
+from stable_baselines.common.policies import ActorCriticPolicy, RecurrentActorCriticPolicy, RLMPCPolicy
 from stable_baselines.common.schedules import get_schedule_fn
 from stable_baselines.common.tf_util import total_episode_reward_logger
 from stable_baselines.common.math_util import safe_mean
@@ -554,7 +554,7 @@ class PPO2(ActorCriticRLModel):
                             summary = tf.Summary.Value(tag="LQR/{}_{}{}".format(k, r, c), simple_value=v_flat[v_i])
                             writer.add_summary(tf.Summary(value=[summary]), self.num_timesteps)
 
-                    if hasattr(self.train_model, "mpc_action_ph") and False:
+                    if self.train_model.update_env_lqr:#hasattr(self.train_model, "mpc_action_ph") and False:
                         self.env.env_method("update_lqr", Q=Q, R=R)
                     if False:
                         for param in self.params:
@@ -685,13 +685,7 @@ class Runner(AbstractEnvRunner):
         ep_infos = []
 
         for _ in range(self.n_steps):
-            if self.frame_skip is not None and _ % self.frame_skip != 0:
-                _, values, self.states, _ = self.model.step(self.obs, self.states, self.dones)
-                #neglogpacs = self.model.sess.run(self.model.neglogpac, {self.model.train_model.obs_ph: self.obs, self.model.action_ph: actions})
-            else:
-                if self.frame_skip is not None:
-                    self.obs[:, :self.obs.shape[1] // 2] = self.obs[:, self.obs.shape[1] // 2:]
-                actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
+            actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
