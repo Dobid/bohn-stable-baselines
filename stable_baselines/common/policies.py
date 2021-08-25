@@ -986,7 +986,7 @@ class ETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they a
 
 
 class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they are correct)
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, A, B, Q, R, obs_module_indices, time_varying=False, n_lqr=1, std=1, reuse=False, layers=None, net_arch=None,
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, A, B, Q, R, obs_module_indices, time_varying=False, update_env_lqr=False, n_lqr=1, std=1, reuse=False, layers=None, net_arch=None,
                  act_fun=tf.tanh, cnn_extractor=nature_cnn, feature_extraction="mlp", measure_execution_time=False, **kwargs):
         from stable_baselines.lqr.policy import LQR
         dist_type = RLMPCProbabilityDistributionType
@@ -1003,6 +1003,10 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
         self.lqr_As = []
         self.lqr_Bs = []
         self.lqr_system_idxs = []
+        self.update_env_lqr = update_env_lqr
+
+        self.last_horizon = None
+
 
         #self.origKs = []
         #self.d_actions = []
@@ -1101,6 +1105,8 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
                 self.pdtype.proba_distribution_from_latent(pi_latent, vf_latent, self.lqr_output, g_std=std, init_scale=init_scale,
                                                            init_bias=init_bias, init_bias_vf=init_bias_vf, init_bias_horizon=init_bias_horizon, max_horizon=max_horizon, horizon_latent_vector=horizon_latent) # TODO: try horizon output as tanh and multiply by limits
 
+            self.fh_action_ph = tf.placeholder(tf.float32, (None, *self.ac_space.shape), name="fixed_horizon_action_ph")
+            self.fh_neglogp = self._proba_distribution.neglogp(self.fh_action_ph)
         if False:
             with tf.variable_scope("model", reuse=True):
                 from stable_baselines.common.distributions import BernoulliProbabilityDistributionType, DiagGaussianProbabilityDistributionType
@@ -1144,6 +1150,15 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
             else:
                 action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp], {self.obs_ph: obs, self.mpc_action_ph: np.zeros(shape=(obs.shape[0], *self.mpc_action_ph.shape[1:]))})
             """
+        #if deterministic:
+        #    action[:, 0] = self.sess.run(self.action, {self.obs_ph: obs, self.lqr_K_ph: K})[:, 0]
+        if self.last_horizon is None:
+            self.last_horizon = action[:, 1]
+        self.last_horizon[mask] = action[:, 1][mask]
+        compute_mask = ~action[:, 0].astype(np.bool)
+        action[:, 1][compute_mask] = self.last_horizon[compute_mask]
+        self.last_horizon = action[:, 1]
+        neglogp = self.sess.run(self.fh_neglogp, {self.fh_action_ph: action, self.obs_ph: obs, self.lqr_K_ph: K})
         return action, value, self.initial_state, neglogp
 
     def proba_step(self, obs, state=None, mask=None):
@@ -1153,14 +1168,348 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
         return self.sess.run(self.value_flat, {self.obs_ph: obs})
 
 
+
+
+class RLMPCPolicy(ActorCriticPolicy):
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, A, B, Q, R, obs_module_indices, time_varying=False, n_lqr=1, std=1, reuse=False, layers=None, net_arch=None,
+                 act_fun=tf.tanh, cnn_extractor=nature_cnn, feature_extraction="mlp", measure_execution_time=False, frame_skip_horizon=None, **kwargs):
+        from stable_baselines.lqr.policy import LQR
+        dist_type = RLMPCProbabilityDistributionType
+        super(RLMPCPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=reuse,
+                                                scale=(feature_extraction == "cnn"), dist_type=dist_type)
+
+        #self._kwargs_check(feature_extraction, kwargs)
+        A = [A for _ in range(n_lqr)]  # TODO: maybe check if already multienv A and B
+        B = [B for _ in range(n_lqr)]
+
+        self.time_varying = time_varying
+        self.obs_module_indices = obs_module_indices
+        self.lqr = LQR(A, B, Q, R, time_varying=time_varying)
+        self.lqr_As = []
+        self.lqr_Bs = []
+        self.lqr_system_idxs = []
+
+        self.frame_skip_horizon = frame_skip_horizon
+        self.frame_counter = np.zeros((n_env,), dtype=np.int32)
+        self.last_horizon = None
+        self.horizon_neglogps = [[] for _ in range(n_env)]
+        self.horizon_rewards = [[] for _ in range(n_env)]
+        self.horizon_values = [[] for _ in range(n_env)]
+        self.horizon_obs = [[] for _ in range(n_env)]
+        self.horizon_actions = [[] for _ in range(n_env)]
+        self.horizon_advs = [[]]
+        self.horizon_last_values = []
+        self.horizon_dones = [[] for _ in range(n_env)]
+        self.horizon_returns = [[] for _ in range(n_env)]
+        self.horizon_last_obs = None
+        self.advs_estimator = None
+
+        #self.origKs = []
+        self.d_actions = []
+
+        if layers is not None:
+            warnings.warn("Usage of the `layers` parameter is deprecated! Use net_arch instead "
+                          "(it has a different semantics though).", DeprecationWarning)
+            if net_arch is not None:
+                warnings.warn("The new `net_arch` parameter overrides the deprecated `layers` parameter!",
+                              DeprecationWarning)
+
+        if net_arch is None:
+            if layers is None:
+                layers = {"vf": [128, 128], "pi": [32, 32]}
+            net_arch = [layers]
+
+        self.measure_execution_time = measure_execution_time
+        self.last_execution_time = None
+
+        with tf.variable_scope("model", reuse=reuse):
+            if self.time_varying:
+                self.lqr_K_ph = tf.placeholder(tf.float32, shape=(None, *self.lqr.K_num.shape[-2:]), name="lqr_K_ph")
+                self.lqr_K_grad_ph = tf.placeholder(tf.float32,
+                                                    shape=(None, self.lqr.weights_size, *self.lqr.K_num.shape[-2:]),
+                                                    name="lqr_K_grad_ph")
+            else:
+                self.lqr_K_ph = tf.placeholder(tf.float32, shape=self.lqr.K_num.shape, name="lqr_K_ph")
+                self.lqr_K_grad_ph = tf.placeholder(tf.float32,
+                                                    shape=(self.lqr.weights_size, *self.lqr.K_num.shape[-2:]),
+                                                    name="lqr_K_grad_ph")
+            weights_num = tf.constant(self.lqr.get_weights().astype(np.float32).reshape(1, -1))
+
+            et_mask = np.array([m == "et" for m in self.obs_module_indices])
+            lqr_mask = np.array([m == "lqr" for m in self.obs_module_indices])
+            et_obs = tf.boolean_mask(self.processed_obs, et_mask, name="et_obs", axis=1)
+            et_obs.set_shape([None, sum(et_mask)])
+            lqr_obs = tf.boolean_mask(self.processed_obs, lqr_mask, name="lqr_obs", axis=1)
+            lqr_obs.set_shape([None, sum(lqr_mask)])
+
+            init_bias = kwargs.pop("init_bias", 0.0)
+            init_bias_vf = kwargs.pop("init_bias_vf", 0.0)
+            init_scale = kwargs.pop("init_scale", 0.01)
+            max_horizon = kwargs.pop("max_horizon", 40.0)
+            init_bias_horizon = kwargs.pop("init_bias_horizon", max_horizon / 2)
+
+            if self.time_varying:  # k is first of the lqr variables
+                self.lqr_k_idx = obs_module_indices.index("lqr")
+            else:
+                self.lqr_k_idx = None
+
+            if feature_extraction == "cnn":
+                pi_latent, vf_latent = cnn_extractor(et_obs, **kwargs)
+            else:
+                if feature_extraction == "cnn_mlp":
+                    latents = cnn_mlp_extractor(et_obs, net_arch, act_fun, **kwargs)
+                else:
+                    latents = mlp_extractor(tf.layers.flatten(et_obs), net_arch, act_fun, **kwargs)
+                    horizon_latent, _ = mlp_extractor(tf.layers.flatten(et_obs), [{"pi": net_arch[0]["pi"]}], act_fun, name="_horizon", **kwargs)
+
+                pi_latent, vf_latent = latents
+        with tf.variable_scope("model", reuse=reuse, use_resource=True):
+            @tf.custom_gradient
+            def lqr_action(x):
+                weights = tf.get_variable(initializer=weights_num, trainable=True, name="LQR_weights", use_resource=True)
+                if time_varying:
+                    k, x = x[:, 0], tf.expand_dims(x[:, 1:], axis=-1)
+                    # Ks = tf.gather(lqr_K, tf.cast(k, tf.int32), axis=0)
+                    u_lqr = -tf.squeeze(tf.matmul(self.lqr_K_ph, x), axis=-1)
+                else:
+                    u_lqr = -tf.matmul(x, tf.transpose(self.lqr_K_ph))
+                u_lqr += tf.reduce_sum(weights) * 0.0
+
+                def grad(dy, variables=None):
+                    # dy = tf.Print(dy, [tf.reduce_mean(dy)], "dy: ")
+                    if time_varying:
+                        # grad_Ks = tf.gather(lqr_K_grad, tf.cast(k,  tf.int32), axis=0)
+                        return None, [tf.matmul(dy, -tf.squeeze(tf.matmul(self.lqr_K_grad_ph, tf.expand_dims(x, axis=1)), axis=[-2, -1]), transpose_a=True)]
+                    else:
+                        return None, [tf.matmul(dy, -tf.matmul(x, self.lqr_K_grad_ph), transpose_a=True)]
+                    # return (dy * x, [tf.reduce_mean(dy * -tf.matmul(x, lqr_K_grad), axis=0, keepdims=True)])
+
+                return u_lqr, grad
+
+            self.lqr_output = lqr_action(lqr_obs)
+            #tf.add(tf.stop_gradient(self.mpc_action_ph), self.lqr_output, "dm_output")
+            #self.weights = tf.get_variable("LQR_weights")
+
+        with tf.variable_scope("model", reuse=reuse):
+            self._value_fn = linear(vf_latent, 'vf', 1)
+
+            self._proba_distribution, self._policy, self.q_value = \
+                self.pdtype.proba_distribution_from_latent(pi_latent, vf_latent, self.lqr_output, g_std=std, init_scale=init_scale,
+                                                           init_bias=init_bias, init_bias_vf=init_bias_vf, init_bias_horizon=init_bias_horizon, max_horizon=max_horizon, horizon_latent_vector=horizon_latent)
+
+            if self.frame_skip_horizon is not None:
+                self._proba_distribution.include_horizon_neglogp = False
+                self.horizon_action_ph = tf.placeholder(dtype=np.float32, shape=(None, 1), name="horizon_action_ph")
+                self.horizon_neglogp = self._proba_distribution.horizon_gpd.neglogp(self.horizon_action_ph)
+
+        self._setup_init()
+
+    def step(self, obs, state=None, mask=None, deterministic=False):
+        if self.measure_execution_time:
+            start_time = time.process_time()
+            action = self.sess.run(self.deterministic_action if deterministic else self.action, {self.obs_ph: obs})
+            self.last_execution_time = time.process_time() - start_time
+            value, neglogp = self.sess.run([self.value_flat, self.neglogp],{self.obs_ph: obs})
+        else:
+            K = self.lqr.get_numeric_value("K")
+            if self.time_varying:
+                if obs.shape[0] > 1:
+                    if isinstance(K, list):
+                        t_idx = np.minimum(obs[..., self.lqr_k_idx], [len(K_i) - 1 for K_i in K]).astype(np.int32)
+                    else:
+                        t_idx = np.minimum(obs[..., self.lqr_k_idx], K.shape[1] - 1).astype(np.int32)
+                    K = np.array([K[i][t_idx[i]] for i in range(len(K))]).reshape(obs.shape[0], *self.lqr.K.shape)
+                else:
+                    K = K[int(min(obs[..., self.lqr_k_idx], len(K) - 1))].reshape(1, *self.lqr.K_num.shape[1:])
+            if deterministic:
+                action, value, neglogp = self.sess.run([self.deterministic_action, self.value_flat, self.neglogp],
+                                                       {self.obs_ph: obs, self.lqr_K_ph: K})
+            else:
+                action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp],
+                                                       {self.obs_ph: obs, self.lqr_K_ph: K})
+
+            #self.d_actions.append(self.sess.run(self.lqr_output, {self.obs_ph: obs, self.lqr_K_ph: K}))
+            """
+            if deterministic:
+                action, value, neglogp = self.sess.run([self.deterministic_action, self.value_flat, self.neglogp],
+                                                       {self.obs_ph: obs, self.mpc_action_ph: np.zeros(shape=(obs.shape[0], *self.mpc_action_ph.shape[1:]))})
+            else:
+                action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp], {self.obs_ph: obs, self.mpc_action_ph: np.zeros(shape=(obs.shape[0], *self.mpc_action_ph.shape[1:]))})
+            """
+        if self.last_horizon is None:
+            self.last_horizon = action[:, 1]
+        compute_mask = ~action[:, 0].astype(np.bool)
+        action[:, 1][compute_mask] = self.last_horizon[compute_mask]
+        if self.frame_skip_horizon is not None and not deterministic:
+            self.frame_counter[mask] = 0
+            self.last_horizon[mask] = self.proba_distribution.horizon_gpd.max_val
+            action[:, 1][self.frame_counter < self.frame_skip_horizon] = self.last_horizon[self.frame_counter < self.frame_skip_horizon]
+            self.frame_counter[(self.frame_counter >= self.frame_skip_horizon) & (compute_mask)] = 0
+            self.frame_counter += 1
+        self.last_horizon = action[:, 1]
+        return action, value, self.initial_state, neglogp
+
+    def proba_step(self, obs, state=None, mask=None):
+        return self.sess.run(self.policy_proba, {self.obs_ph: obs})
+
+    def value(self, obs, state=None, mask=None):
+        return self.sess.run(self.value_flat, {self.obs_ph: obs})
+
+    def add_data(self, obs, actions, rewards, nextobs, dones, infos, frame_counter):  # TODO: do i need to use dones here or is that taken into account through framecounter and step function?
+        assert self.frame_skip_horizon is not None
+        for env_i in range(self.n_env):
+            if frame_counter[env_i] == 1:
+                self.horizon_neglogps[env_i].append(self.sess.run(self.horizon_neglogp, {self.horizon_action_ph: actions[env_i, 1].reshape(1, 1), self.obs_ph: obs[env_i, :].reshape(1, -1)}))
+                self.horizon_obs[env_i].append(obs[env_i])
+                self.horizon_actions[env_i].append(actions[env_i, 1])
+                self.horizon_rewards[env_i].append(rewards[env_i])
+                self.horizon_values[env_i].append(self.sess.run(self.value_flat, {self.obs_ph: obs[env_i].reshape(1, -1)}))
+                self.horizon_dones[env_i].append(dones[env_i])
+            else:
+                self.horizon_rewards[env_i][-1] += rewards[env_i]
+
+    def finalize_data(self, obs, dones, gamma, lam):
+        self.horizon_last_obs = obs
+        self.horizon_last_values = self.sess.run(self.value_flat, {self.obs_ph: obs})
+
+        self.horizon_last_dones = dones
+
+        self.estimate_advantages(gamma, lam, calculate_values=False)
+
+    def reset_data(self):
+        self.last_horizon = None
+        self.horizon_neglogps = [[] for _ in range(self.n_env)]
+        self.horizon_rewards = [[] for _ in range(self.n_env)]
+        self.horizon_values = [[] for _ in range(self.n_env)]
+        self.horizon_obs = [[] for _ in range(self.n_env)]
+        self.horizon_actions = [[] for _ in range(self.n_env)]
+        self.horizon_advs = [[]]
+        self.horizon_last_values = []
+        self.horizon_dones = [[] for _ in range(self.n_env)]
+        self.horizon_returns = [[] for _ in range(self.n_env)]
+
+    def estimate_advantages(self, gamma, lam, calculate_values=True):   # TODO: properly discount (i.e. gamma^d)
+        if calculate_values:
+            self.horizon_last_values = self.sess.run(self.value_flat, {self.obs_ph: self.horizon_last_obs})
+        self.horizon_advs = []
+        self.horizon_returns = [[] for _ in range(self.n_env)]
+
+        for env_i in range(self.n_env):
+            advs = np.zeros_like(self.horizon_rewards[env_i])
+            n_steps = advs.shape[0]
+            last_gae_lam = 0
+            if calculate_values:
+                self.horizon_values[env_i] = self.sess.run(self.value_flat, {self.obs_ph: self.horizon_obs[env_i]})
+            self.horizon_returns[env_i] = np.copy(self.horizon_values[env_i])
+            for step in reversed(range(n_steps)):
+                if step == n_steps - 1:
+                    nextnonterminal = 1.0 - self.horizon_last_dones[env_i]
+                    nextvalues = self.horizon_last_values[env_i]
+                else:
+                    nextnonterminal = 1.0 - self.horizon_dones[env_i][step + 1]
+                    nextvalues = self.horizon_values[env_i][step + 1]
+                delta = self.horizon_rewards[env_i][step] + gamma * nextvalues * nextnonterminal - self.horizon_values[env_i][step]
+                advs[step] = last_gae_lam = delta + gamma * lam * nextnonterminal * last_gae_lam
+                self.horizon_returns[env_i][step] += advs[step]
+
+            self.horizon_advs.append(advs)
+
+
+    def sample_data(self):
+        """
+        Returns horizon data (obs, actions, returns, values, advantages, neglogp)
+        :return:
+        """
+        def concatenate_data(data):
+            return np.concatenate(data, axis=0)
+
+        return map(concatenate_data, (self.horizon_obs, self.horizon_actions, self.horizon_returns, self.horizon_values, self.horizon_advs, self.horizon_neglogps))
+
+
 if tfp_import:
     class AHMPCPolicy(FeedForwardPolicy):
         def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, layers=None, net_arch=None,
-                     act_fun=tf.tanh, cnn_extractor=nature_cnn, feature_extraction="mlp", measure_execution_time=False, **kwargs):
+                     act_fun=tf.tanh, use_mpc_value_fn=False, mpc_state_dim=None, mpc_parameter_dim=None,
+                     train_mpc_value_fn=True, mpc_gamma=1, mpc_act_fun="tanh", use_mpc_vf_target=False, mpc_value_fn_path=None,
+                     mpc_vf_type="nn", mpc_n_steps=32, cnn_extractor=nature_cnn,
+                     feature_extraction="mlp", measure_execution_time=False, **kwargs):
             self.dist_type = GeneralizedPoissonProbabilityDistributionType#PoissonProbabilityDistributionType,
             super(AHMPCPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse, dist_type=self.dist_type,
                                               layers=layers, net_arch=net_arch, act_fun=act_fun,
                                             feature_extraction="mlp", **kwargs)
+
+            assert use_mpc_value_fn is False or (mpc_state_dim is not None and mpc_parameter_dim is not None)
+            assert mpc_vf_type in ["nn", "sos", "poly"]
+            assert mpc_act_fun in ["tanh", "relu"]
+            if layers is not None and "mpc" in layers:
+                net_arch = [{"vf": layers["mpc"]}]
+            elif net_arch is None:
+                net_arch = [{"vf": [128, 128]}]
+            elif "mpc" in net_arch[0]:
+                net_arch[0]["vf"] = net_arch[0]["mpc"]
+
+            if train_mpc_value_fn:
+                from stable_baselines.common.buffers import ReplayBuffer
+                self.mpc_replay_buffer = ReplayBuffer(int(5e5), ["bootstrap"])
+                self.ep_data = [[] for _ in range(n_env)]
+
+            self.mpc_net_arch = net_arch
+            self.mpc_act_fun = getattr(tf.nn, mpc_act_fun)
+            self.mpc_n_steps = mpc_n_steps
+
+            self.mpc_value_fn = None
+            self.use_mpc_vf_target = use_mpc_vf_target and use_mpc_value_fn
+            self.use_mpc_value_fn = use_mpc_value_fn
+            self.train_mpc_value_fn = use_mpc_value_fn and train_mpc_value_fn
+            self.mpc_vf_type = mpc_vf_type
+            self.mpc_gamma = mpc_gamma
+            self.mpc_value_fn_path = mpc_value_fn_path
+            if self.use_mpc_value_fn:
+                self.mpc_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim + mpc_parameter_dim),
+                                                   name="mpc_state_ph", dtype=tf.float32)
+                self.mpc_next_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim + mpc_parameter_dim),
+                                                        name="mpc_next_state_ph", dtype=tf.float32)
+                self.mpc_vf_w_b = None
+
+        def make_mpc_value_fn(self, state, reuse=False, scope="mpc_value_fns"):
+            state = tf.layers.flatten(state)
+            with tf.variable_scope("model/{}".format(scope), reuse=reuse):
+                if self.mpc_vf_type == "nn":
+                    _, mpc_value_fn = mlp_extractor(state, self.mpc_net_arch, self.mpc_act_fun, name="mpc")
+                elif self.mpc_vf_type == "sos":
+                    # if self.mpc_parameter_ph.shape[1] == 2:
+                    #    parameter = tf.subtract(parameter, state[:, 1:], name="goal_distance")
+                    mpc_value_fn = state
+                    mpc_value_fn = tf.square(mpc_value_fn)
+                elif self.mpc_vf_type == "poly":
+                    # if self.mpc_parameter_ph.shape[1] == 2:
+                    #    parameter = tf.subtract(parameter, state[:, 1:], name="goal_distance")
+                    mpc_value_fn = state
+                    mpc_value_fn = tf.concat([mpc_value_fn, tf.square(mpc_value_fn)], axis=-1)
+                else:
+                    raise NotImplementedError
+                mpc_value_fn = tf.layers.dense(mpc_value_fn, 1, name="mpc_value_fn")
+                if not reuse:
+                    self.mpc_value_fn = mpc_value_fn
+                    self.mpc_vf_w_b = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="train_model/model/{}".format(scope))
+
+            return mpc_value_fn
+
+        def get_mpc_vfn_weights_and_biases(self):
+            wbs = self.sess.run(self.mpc_vf_w_b)
+            w_inds = [i for i, v in enumerate(self.mpc_vf_w_b) if "kernel" in v.name or "/w:" in v.name]
+            b_inds = [i for i, v in enumerate(self.mpc_vf_w_b) if "bias" in v.name or "/b:" in v.name]
+            return [wbs[i] for i in w_inds], [wbs[i] for i in b_inds]
+
+        def add_mpc_data(self, state, action, reward, next_state, done, env_i=0, **extra_data):
+            self.ep_data[env_i].append([state, action, reward, next_state, done, *[extra_data[k] for k in sorted(extra_data)]])
+            if done:
+                for i in range(len(self.ep_data[env_i])):
+                    self.mpc_replay_buffer.add(*self.ep_data[env_i][i])
+                self.ep_data[env_i] = []
+
+        def mpc_data_sample(self, batch_size):
+            return self.mpc_replay_buffer.sample(batch_size, n_step=self.mpc_n_steps, gamma=self.mpc_gamma)
 
         def step(self, obs, state=None, mask=None, deterministic=False):
             if True or self.dist_type != GeneralizedPoissonProbabilityDistributionType:
