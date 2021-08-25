@@ -691,9 +691,9 @@ class Runner(AbstractEnvRunner):
             mb_values.append(values)
             mb_neglogpacs.append(neglogpacs)
             mb_dones.append(self.dones)
-            clipped_actions = actions
+            clipped_actions = actions.copy()
             # Clip the actions to avoid out of bound error
-            if isinstance(self.env.action_space, gym.spaces.Box):
+            if isinstance(self.env.action_space, gym.spaces.Box) and False:  # TODO: shouldnt clip here for gym-let-mpc
                 clipped_actions = np.clip(actions, self.env.action_space.low, self.env.action_space.high)
             if self.frame_skip:
                 newobs, rewards, self.dones, infos = self.env.step(clipped_actions)
