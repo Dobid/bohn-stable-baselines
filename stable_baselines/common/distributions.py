@@ -640,12 +640,12 @@ class RLMPCProbabilityDistributionType(ProbabilityDistributionType):
 
         etparam = linear(pi_latent_vector, 'pi/et', 1, init_scale=init_scale, init_bias=init_bias)
 
-        #w_scale = 0.5 * (max_horizon - min_horizon) * (1 - (-1)) / (1 - (-1))
+        w_scale = 0.5 * (max_horizon - min_horizon) * (1 - (-1)) / (1 - (-1))
         #rate = tf.nn.relu(linear(pi_latent_vector, "pi/horizon_rate", 1, init_scale=init_scale, init_bias=init_bias_horizon))
-        rate = tf.tanh(linear(horizon_latent_vector, 'pi/horizon_rate', 1, init_scale=init_scale, init_bias=init_bias_horizon))#, w_scale=w_scale))
+        rate = tf.tanh(linear(horizon_latent_vector, 'pi/horizon_rate', 1, init_scale=init_scale, init_bias=init_bias_horizon, w_scale=w_scale))
         rate = (max_horizon - min_horizon) * (rate - (-1)) / (1 - (-1)) + min_horizon  # scale rate to (min, max) horizon
         alpha = tf.get_variable(name='pi/horizon_alpha', shape=[1, 1], initializer=tf.constant_initializer(-1 / (2 * max_horizon)),
-                                constraint=lambda z: tf.clip_by_value(z, -1 / (max_horizon + 1), 1 / max_horizon), trainable=True)
+                                constraint=lambda z: tf.clip_by_value(z, -1 / (max_horizon + 1), 1 / max_horizon), trainable=False)
 
         logstd_0 = tf.get_variable(name='pi/lqr_logstd', initializer=tf.constant(np.log(g_std, dtype=np.float32), shape=[1, g_mean.shape[-1]]), trainable=True)  # TODO: consider changing to nontrainable
         g_param = tf.concat([g_mean, g_mean * 0.0 + logstd_0], axis=1)
