@@ -300,7 +300,10 @@ class HindsightExperienceReplayWrapper(object):
                     obs_dict['desired_goal'] = goal
                     next_obs_dict['desired_goal'] = goal
                     info = {"step": transition_idx + 1, "prev_state": prev_state, "action": action}
-                    reward = self.env.compute_reward(achieved_goal, desired_goal, info, indices=env_i)[0]
+                    if self.num_envs > 1:
+                        reward = self.env.compute_reward(achieved_goal, desired_goal, info, indices=env_i)[0]
+                    else:
+                        reward = self.env.compute_reward(achieved_goal, desired_goal, info)
                     # Can we use achieved_goal == desired_goal?
                     done = False
 
