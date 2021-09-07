@@ -20,7 +20,7 @@ class HERGoalEnvWrapper(object):
     :param env: (gym.GoalEnv)
     """
 
-    def __init__(self, env, norm=False, norm_reward=False, gamma=0.99, clip_obs=10, update_every=8):  # TODO: sync with other wrappers (probably has to be done outside this class)
+    def __init__(self, env, norm=False, norm_reward=False, gamma=0.99, clip_obs=10, update_every=8, training=True):  # TODO: sync with other wrappers (probably has to be done outside this class)
         super(HERGoalEnvWrapper, self).__init__()
         self._env = env
         self.metadata = self._env.metadata
@@ -73,6 +73,7 @@ class HERGoalEnvWrapper(object):
         self.orig_obs = None
         self.epsilon = 1e-5
         self.gamma = gamma
+        self.training = training
 
         self.update_every = update_every
 
@@ -125,9 +126,9 @@ class HERGoalEnvWrapper(object):
         obs = self.convert_dict_to_obs(obs)
         if self.norm:
             self.orig_obs = np.copy(obs)
-            obs = self.normalize_observation(obs, update=True)
+            obs = self.normalize_observation(obs, update=True and self.training)
             if self.norm_reward:
-                reward = self.normalize_reward(reward, update=True)
+                reward = self.normalize_reward(reward, update=True and self.training)
             if len(self.ep_obs_data) > self.update_every:
                 self.obs_rms.update(np.stack(self.ep_obs_data, axis=0))
                 self.ep_obs_data = []
