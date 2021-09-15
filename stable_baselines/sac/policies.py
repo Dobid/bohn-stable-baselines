@@ -180,7 +180,7 @@ class FeedForwardPolicy(SACPolicy):
 
     def __init__(self, sess, ob_space, ac_space, n_env=1, n_steps=1, n_batch=None, reuse=False, layers=None,
                  cnn_extractor=nature_cnn, feature_extraction="cnn", reg_weight=0.0, initial_std=1,
-                 layer_norm=False, act_fun=tf.nn.relu, obs_module_indices=None, goal_size=None, **kwargs):
+                 layer_norm=False, act_fun=tf.nn.relu, obs_module_indices=None, goal_size=None, skip_connection=False, **kwargs):
         super(FeedForwardPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch,
                                                 reuse=reuse,
                                                 scale=(feature_extraction == "cnn" and cnn_extractor == nature_cnn))
@@ -208,6 +208,8 @@ class FeedForwardPolicy(SACPolicy):
 
         self.policy_pre_activation = None
 
+        self.skip_connection = skip_connection
+
         assert len(layers) >= 1, "Error: must have at least one hidden layer for the policy."
 
         self.activ_fn = act_fun
@@ -231,6 +233,9 @@ class FeedForwardPolicy(SACPolicy):
                 pi_h = self.cnn_extractor(obs, name="pi_c1", act_fun=self.activ_fn, **self.cnn_kwargs)
             else:
                 pi_h = tf.layers.flatten(obs)
+
+            if self.skip_connection:
+                pi_h = tf.concat([pi_h, obs[:, 0, ...]], axis=1)
 
             pi_h = mlp(pi_h, self.layers["pi"], self.activ_fn, layer_norm=self.layer_norm)
 
@@ -278,6 +283,7 @@ class FeedForwardPolicy(SACPolicy):
             goal -= obs_no_goal[..., -self.goal_size:]
             obs = tf.concat([obs_no_goal, goal], axis=-1)
 
+
         with tf.variable_scope(scope, reuse=reuse):
             if self.feature_extraction == "cnn" and self.cnn_vf:
                 critics_h = self.cnn_extractor(obs, name="vf_c1", act_fun=self.activ_fn, **self.cnn_kwargs)
@@ -286,6 +292,9 @@ class FeedForwardPolicy(SACPolicy):
 
             if extracted_callback is not None:
                 critics_h = extracted_callback(critics_h)
+
+            if self.skip_connection:
+                critics_h = tf.concat([critics_h, obs[:, 0, ...]], axis=1)
 
             if create_vf:
                 # Value function
