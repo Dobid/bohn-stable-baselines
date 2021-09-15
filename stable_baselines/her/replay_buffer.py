@@ -292,7 +292,7 @@ class HindsightExperienceReplayWrapper(object):
                     prev_state = obs_dict["achieved_goal"]
                     achieved_goal = next_obs_dict['achieved_goal']
                     desired_goal = goal
-                    if self.multi_step_obs:
+                    if (self.num_envs == 1 and self.multi_step_obs) or (self.num_envs > 1 and self.multi_step_obs[0]):
                         prev_state = prev_state[0]
                         achieved_goal = achieved_goal[0]
                         desired_goal = goal[0]
