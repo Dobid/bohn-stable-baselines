@@ -1119,39 +1119,28 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
         self._setup_init()
 
     def step(self, obs, state=None, mask=None, deterministic=False):
+        K = self.lqr.get_numeric_value("K")
+        if self.time_varying:
+            if obs.shape[0] > 1:
+                if isinstance(K, list):
+                    t_idx = np.minimum(obs[..., self.lqr_k_idx], [len(K_i) - 1 for K_i in K]).astype(np.int32)
+                else:
+                    t_idx = np.minimum(obs[..., self.lqr_k_idx], K.shape[1] - 1).astype(np.int32)
+                K = np.array([K[i][t_idx[i]] for i in range(len(K))]).reshape(obs.shape[0], *self.lqr.K.shape)
+            else:
+                K = K[int(min(obs[..., self.lqr_k_idx], len(K) - 1))].reshape(1, *self.lqr.K_num.shape[1:])
         if self.measure_execution_time:
             start_time = time.process_time()
-            action = self.sess.run(self.deterministic_action if deterministic else self.action, {self.obs_ph: obs})
+            action = self.sess.run(self.deterministic_action if deterministic else self.action, {self.obs_ph: obs, self.lqr_K_ph: K})
             self.last_execution_time = time.process_time() - start_time
-            value, neglogp = self.sess.run([self.value_flat, self.neglogp],{self.obs_ph: obs})
+            value, neglogp = self.sess.run([self.value_flat, self.neglogp], {self.obs_ph: obs, self.lqr_K_ph: K})
         else:
-            K = self.lqr.get_numeric_value("K")
-            if self.time_varying:
-                if obs.shape[0] > 1:
-                    if isinstance(K, list):
-                        t_idx = np.minimum(obs[..., self.lqr_k_idx], [len(K_i) - 1 for K_i in K]).astype(np.int32)
-                    else:
-                        t_idx = np.minimum(obs[..., self.lqr_k_idx], K.shape[1] - 1).astype(np.int32)
-                    K = np.array([K[i][t_idx[i]] for i in range(len(K))]).reshape(obs.shape[0], *self.lqr.K.shape)
-                else:
-                    K = K[int(min(obs[..., self.lqr_k_idx], len(K) - 1))].reshape(1, *self.lqr.K_num.shape[1:])
-            if deterministic:
-                action, value, neglogp = self.sess.run([self.deterministic_action, self.value_flat, self.neglogp],
-                                                       {self.obs_ph: obs, self.lqr_K_ph: K})
-            else:
-                action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp],
-                                                       {self.obs_ph: obs, self.lqr_K_ph: K})
+            action, value, neglogp = self.sess.run([self.deterministic_action if deterministic else self.action, self.value_flat, self.neglogp], {self.obs_ph: obs, self.lqr_K_ph: K})
 
-            #self.d_actions.append(self.sess.run(self.deterministic_action, {self.obs_ph: obs, self.lqr_K_ph: K}))
-            """
-            if deterministic:
-                action, value, neglogp = self.sess.run([self.deterministic_action, self.value_flat, self.neglogp],
-                                                       {self.obs_ph: obs, self.mpc_action_ph: np.zeros(shape=(obs.shape[0], *self.mpc_action_ph.shape[1:]))})
-            else:
-                action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp], {self.obs_ph: obs, self.mpc_action_ph: np.zeros(shape=(obs.shape[0], *self.mpc_action_ph.shape[1:]))})
-            """
-        #if deterministic:
-        #    action[:, 0] = self.sess.run(self.action, {self.obs_ph: obs, self.lqr_K_ph: K})[:, 0]
+        if deterministic:
+            et_stochastic = self.sess.run(self.action, {self.obs_ph: obs, self.lqr_K_ph: K})
+            action[:, 0] = et_stochastic[:, 0]
+
         if self.last_horizon is None:
             self.last_horizon = action[:, 1]
         self.last_horizon[mask] = action[:, 1][mask]
