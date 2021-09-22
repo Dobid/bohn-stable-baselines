@@ -1247,7 +1247,9 @@ class RLMPCProbabilityDistribution(ProbabilityDistribution):
         return self.b_logits, self.g_flat, self.nb_logits, self.nb_counts
 
     def mode(self):
-        et = tf.round(self.b_probabilities)
+        #et = tf.round(self.b_probabilities)
+        samples_from_uniform = tf.random_uniform(tf.shape(self.b_probabilities))
+        et = tf.cast(math_ops.less(samples_from_uniform, self.b_probabilities), tf.float32)
         return tf.concat([et, self.horizon_gpd.mode(), (1 - et) * self.g_mean], axis=1)
 
     def neglogp(self, x):  # TODO: should it be positive/negative (or both?).

@@ -1137,9 +1137,9 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
         else:
             action, value, neglogp = self.sess.run([self.deterministic_action if deterministic else self.action, self.value_flat, self.neglogp], {self.obs_ph: obs, self.lqr_K_ph: K})
 
-        if deterministic:
-            et_stochastic = self.sess.run(self.action, {self.obs_ph: obs, self.lqr_K_ph: K})
-            action[:, 0] = et_stochastic[:, 0]
+        #if deterministic:
+        #    et_stochastic = self.sess.run(self.action, {self.obs_ph: obs, self.lqr_K_ph: K})
+        #    action[:, 0] = et_stochastic[:, 0]
 
         if self.last_horizon is None:
             self.last_horizon = action[:, 1]
