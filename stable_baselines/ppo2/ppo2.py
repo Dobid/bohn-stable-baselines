@@ -554,7 +554,7 @@ class PPO2(ActorCriticRLModel):
                             summary = tf.Summary.Value(tag="LQR/{}_{}{}".format(k, r, c), simple_value=v_flat[v_i])
                             writer.add_summary(tf.Summary(value=[summary]), self.num_timesteps)
 
-                    if self.train_model.update_env_lqr:#hasattr(self.train_model, "mpc_action_ph") and False:
+                    if getattr(self.train_model, "update_env_lqr", False):#hasattr(self.train_model, "mpc_action_ph") and False:
                         self.env.env_method("update_lqr", Q=Q, R=R)
                     if False:
                         for param in self.params:
