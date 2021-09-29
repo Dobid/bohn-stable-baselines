@@ -368,14 +368,14 @@ class PPO2(ActorCriticRLModel):
             update_fac = max(self.n_batch // self.nminibatches // self.noptepochs // self.n_steps, 1)
 
 
-        grads = self.sess.run([v[0] for v in self.grads if v[0] is not None], td_map)
-        for g_i, g in enumerate(grads):
-            if np.any(np.isnan(g)):
-                print("Grad is nan for: {}".format(self.grads[g_i][1].name))
+        #grads = self.sess.run([v[0] for v in self.grads if v[0] is not None], td_map)
+        #for g_i, g in enumerate(grads):
+        #    if np.any(np.isnan(g)):
+        #        print("Grad is nan for: {}".format(self.grads[g_i][1].name))
 
         if writer is not None:
             # run loss backprop with summary, but once every 10 runs save the metadata (memory, compute time, ...)
-            if self.full_tensorboard_log and (1 + update) % 10 == 0:
+            if self.full_tensorboard_log and False and (1 + update) % 10 == 0:
                 run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
                 run_metadata = tf.RunMetadata()
                 summary, policy_loss, value_loss, policy_entropy, approxkl, clipfrac, _ = self.sess.run(
