@@ -180,7 +180,8 @@ class FeedForwardPolicy(SACPolicy):
 
     def __init__(self, sess, ob_space, ac_space, n_env=1, n_steps=1, n_batch=None, reuse=False, layers=None,
                  cnn_extractor=nature_cnn, feature_extraction="cnn", reg_weight=0.0, initial_std=1,
-                 layer_norm=False, act_fun=tf.nn.relu, obs_module_indices=None, goal_size=None, skip_connection=False, **kwargs):
+                 layer_norm=False, act_fun=tf.nn.relu, obs_module_indices=None, goal_size=None, skip_connection=False,
+                 skip_integrator=False, integrator_states=None, **kwargs):
         super(FeedForwardPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch,
                                                 reuse=reuse,
                                                 scale=(feature_extraction == "cnn" and cnn_extractor == nature_cnn))
@@ -210,6 +211,9 @@ class FeedForwardPolicy(SACPolicy):
 
         self.skip_connection = skip_connection
 
+        self.skip_integrator = skip_integrator
+        self.integrator_states = integrator_states
+
         assert len(layers) >= 1, "Error: must have at least one hidden layer for the policy."
 
         self.activ_fn = act_fun
@@ -219,7 +223,18 @@ class FeedForwardPolicy(SACPolicy):
             obs = self.processed_obs
 
         if self.obs_module_indices is not None:
-            obs = tf.gather(obs, self.obs_module_indices["pi"], axis=-1)
+            if self.skip_integrator:
+                obs_int = tf.gather(obs, self.integrator_states, axis=-1)
+                obs = tf.gather(obs, [i for i in self.obs_module_indices["pi"] if i not in self.integrator_states], axis=-1)
+            else:
+                obs = tf.gather(obs, self.obs_module_indices["pi"], axis=-1)
+        elif self.skip_integrator:
+            obs_int = tf.gather(obs, self.integrator_states, axis=-1)
+            obs = tf.gather(obs, [i for i in range(len(obs.shape[-1].value)) if i not in self.integrator_states], axis=-1)
+
+        if self.skip_integrator:
+            with tf.variable_scope(scope, reuse=reuse):
+                self.int_K = tf.get_variable("K_i", dtype=np.float32, initializer=tf.zeros(len(self.integrator_states)), trainable=True)
 
         if self.goal_size is not None:
             #obs = tf.Print(obs, [obs], "Before subtract: ", summarize=-1)
@@ -257,12 +272,22 @@ class FeedForwardPolicy(SACPolicy):
 
         std = tf.exp(log_std)
         # Reparameterization trick
-        pi_ = mu_ + tf.random_normal(tf.shape(mu_)) * std
+        random_sample = tf.random_normal(tf.shape(mu_))
+        pi_ = mu_ + random_sample * std
         logp_pi = gaussian_likelihood(pi_, mu_, log_std)
         # MISSING: reg params for log and mu
         # Apply squashing and account for it in the probability
         deterministic_policy, policy, logp_pi = apply_squashing_func(mu_, pi_, logp_pi)
         if not reuse:
+            if self.skip_integrator:
+                #obs_int = tf.Print(obs_int, [obs_int], "Obs_int: ")
+                mu_int_elevail = self.int_K * obs_int[:, 0, :]
+                #mu_int_elevail = tf.Print(mu_int_elevail, [mu_int_elevail], "mu_int_elevail: ")
+                mu_int = tf.stack([mu_int_elevail[:, 1] - mu_int_elevail[:, 0], mu_int_elevail[:, 0] + mu_int_elevail[:, 1]], axis=1)
+                #mu_int = tf.Print(mu_int, [mu_int], "mu_int: ")
+                self.mu_int = mu_int
+                deterministic_policy += mu_int
+                policy += mu_int + random_sample * std
             self.policy_pre_activation = pi_
             self.std = std
             self.entropy = gaussian_entropy(log_std)
