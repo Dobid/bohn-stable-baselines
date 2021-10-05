@@ -20,7 +20,7 @@ class HERGoalEnvWrapper(object):
     :param env: (gym.GoalEnv)
     """
 
-    def __init__(self, env, norm=False, norm_reward=False, gamma=0.99, clip_obs=10, update_every=8, training=True):  # TODO: sync with other wrappers (probably has to be done outside this class)
+    def __init__(self, env, norm=False, norm_reward=False, gamma=0.99, clip_obs=np.inf, update_every=8, training=True):  # TODO: sync with other wrappers (probably has to be done outside this class)
         super(HERGoalEnvWrapper, self).__init__()
         self._env = env
         self.metadata = self._env.metadata
