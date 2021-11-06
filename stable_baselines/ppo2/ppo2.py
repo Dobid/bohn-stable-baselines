@@ -485,7 +485,10 @@ class PPO2(ActorCriticRLModel):
                                     self.train_model.lqr.set_numeric_value({"A": self.train_model.lqr_As[unique_system_idxs], "B": self.train_model.lqr_Bs[unique_system_idxs]})
                                     grad_Ks = self.train_model.lqr._grad_K()
                                     lqr_Ks = self.train_model.lqr.get_numeric_value("K")
-                                    t_idxs = obs[mbinds, self.train_model.lqr_k_idx].astype(np.int32)
+                                    if self.train_model.obs_2d:
+                                        t_idxs = obs[mbinds, 0, self.train_model.lqr_k_idx].astype(np.int32)
+                                    else:
+                                        t_idxs = obs[mbinds, self.train_model.lqr_k_idx].astype(np.int32)
                                     t_idxs = [min(len(lqr_Ks[idx]) - 1, t_idxs[i]) for i, idx in enumerate(unique_inverse_idxs)]
                                     if isinstance(lqr_Ks, list):
                                         self.train_model.lqr_Ks = np.array([lqr_Ks[idx][t_idxs[i]] for i, idx in enumerate(unique_inverse_idxs)])   # TODO: dont know if this works

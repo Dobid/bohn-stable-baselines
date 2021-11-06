@@ -48,9 +48,9 @@ def cnn_mlp_extractor(obs, net_arch, act_fun, obs_module_indices=None, dual_crit
     conv_vf = kwargs.pop("cnn_vf", True)
     shared = kwargs.pop("cnn_shared", None)
     if shared or shared is None:
-        name = "shared_c1" if shared is not None else "c1"  # Backwards Compatability
+        name = "shared_c1" if shared is not None else "c1" + kwargs.pop("name", "") # Backwards Compatability
         conv_layer = cnn_1d_extractor(obs, act_fun, name, **kwargs)
-        mlps = mlp_extractor(conv_layer, net_arch, act_fun, obs_module_indices, dual_critic=dual_critic)
+        mlps = mlp_extractor(conv_layer, net_arch, act_fun, obs_module_indices, dual_critic=dual_critic, name=name)
         if dual_critic:
             pi_mlp, vf_mlp, vf_mlp_d = mlps
         else:
@@ -1009,7 +1009,9 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
 
 
         #self.origKs = []
-        #self.d_actions = []
+        self.d_actions = []
+
+        self.obs_2d = len(self.ob_space.shape) == 2
 
         if layers is not None:
             warnings.warn("Usage of the `layers` parameter is deprecated! Use net_arch instead "
@@ -1045,10 +1047,14 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
 
             et_mask = np.array([m == "et" for m in self.obs_module_indices])
             lqr_mask = np.array([m == "lqr" for m in self.obs_module_indices])
-            et_obs = tf.boolean_mask(self.processed_obs, et_mask, name="et_obs", axis=1)
-            et_obs.set_shape([None, sum(et_mask)])
-            lqr_obs = tf.boolean_mask(self.processed_obs, lqr_mask, name="lqr_obs", axis=1)
-            lqr_obs.set_shape([None, sum(lqr_mask)])
+            et_obs = tf.boolean_mask(self.processed_obs, et_mask, name="et_obs", axis=2 if self.obs_2d else 1)
+            et_obs.set_shape([None, 5, sum(et_mask)])
+            if self.obs_2d:
+                lqr_obs = tf.boolean_mask(self.processed_obs[:, 0, :], lqr_mask, name="lqr_obs", axis=1)
+                lqr_obs.set_shape([None, sum(lqr_mask)])
+            else:
+                lqr_obs = tf.boolean_mask(self.processed_obs, lqr_mask, name="lqr_obs", axis=1)
+                lqr_obs.set_shape([None, sum(lqr_mask)])
 
             init_bias = kwargs.pop("init_bias", 0.0)
             init_bias_vf = kwargs.pop("init_bias_vf", 0.0)
@@ -1066,6 +1072,8 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
             else:
                 if feature_extraction == "cnn_mlp":
                     latents = cnn_mlp_extractor(et_obs, net_arch, act_fun, **kwargs)
+                    horizon_latent, _ = cnn_mlp_extractor(et_obs, [{"pi": net_arch[0]["pi"]}], act_fun,
+                                                      name="_horizon", **kwargs)
                 else:
                     latents = mlp_extractor(tf.layers.flatten(et_obs), net_arch, act_fun, **kwargs)
                     horizon_latent, _ = mlp_extractor(tf.layers.flatten(et_obs), [{"pi": net_arch[0]["pi"]}], act_fun, name="_horizon", **kwargs)
@@ -1103,7 +1111,7 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
 
             self._proba_distribution, self._policy, self.q_value = \
                 self.pdtype.proba_distribution_from_latent(pi_latent, vf_latent, self.lqr_output, g_std=std, init_scale=init_scale,
-                                                           init_bias=init_bias, init_bias_vf=init_bias_vf, init_bias_horizon=init_bias_horizon, max_horizon=max_horizon, horizon_latent_vector=horizon_latent) # TODO: try horizon output as tanh and multiply by limits
+                                                           init_bias=init_bias, init_bias_vf=init_bias_vf, init_bias_horizon=init_bias_horizon, max_horizon=max_horizon, horizon_latent_vector=horizon_latent)
 
             self.fh_action_ph = tf.placeholder(tf.float32, (None, *self.ac_space.shape), name="fixed_horizon_action_ph")
             self.fh_neglogp = self._proba_distribution.neglogp(self.fh_action_ph)
@@ -1122,10 +1130,16 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
         K = self.lqr.get_numeric_value("K")
         if self.time_varying:
             if obs.shape[0] > 1:
-                if isinstance(K, list):
-                    t_idx = np.minimum(obs[..., self.lqr_k_idx], [len(K_i) - 1 for K_i in K]).astype(np.int32)
+                if self.obs_2d:
+                    if isinstance(K, list):
+                        t_idx = np.minimum(obs[:, 0, self.lqr_k_idx], [len(K_i) - 1 for K_i in K]).astype(np.int32)
+                    else:
+                        t_idx = np.minimum(obs[:, 0, self.lqr_k_idx], K.shape[1] - 1).astype(np.int32)
                 else:
-                    t_idx = np.minimum(obs[..., self.lqr_k_idx], K.shape[1] - 1).astype(np.int32)
+                    if isinstance(K, list):
+                        t_idx = np.minimum(obs[..., self.lqr_k_idx], [len(K_i) - 1 for K_i in K]).astype(np.int32)
+                    else:
+                        t_idx = np.minimum(obs[..., self.lqr_k_idx], K.shape[1] - 1).astype(np.int32)
                 K = np.array([K[i][t_idx[i]] for i in range(len(K))]).reshape(obs.shape[0], *self.lqr.K.shape)
             else:
                 K = K[int(min(obs[..., self.lqr_k_idx], len(K) - 1))].reshape(1, *self.lqr.K_num.shape[1:])
