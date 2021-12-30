@@ -10,16 +10,10 @@ from stable_baselines.common.tf_util import batch_to_seq, seq_to_batch
 from stable_baselines.common.tf_layers import conv, linear, conv_to_fc, lstm
 from stable_baselines.common.distributions import make_proba_dist_type, CategoricalProbabilityDistribution, \
     MultiCategoricalProbabilityDistribution, DiagGaussianProbabilityDistribution, BernoulliProbabilityDistribution, \
-    BetaProbabilityDistribution, MixProbabilityDistribution, GeneralizedPoissonProbabilityDistribution, GeneralizedPoissonProbabilityDistributionType, BoundedDiagGaussianProbabilityDistributionType, RLMPCProbabilityDistributionType
-try:
-    from stable_baselines.common.distributions import NegativeBinomialProbabilityDistribution, NegativeBinomialProbabilityDistributionType, PoissonProbabilityDistribution, PoissonProbabilityDistributionType
-    tfp_import = True
-except ImportError:
-    tfp_import = False
-
-from stable_baselines.common.distributions import MixProbabilityDistributionType
+    BetaProbabilityDistribution, GeneralizedPoissonProbabilityDistribution, GeneralizedPoissonProbabilityDistributionType, BoundedDiagGaussianProbabilityDistributionType, RLMPCProbabilityDistributionType
 from stable_baselines.common.input import observation_input
 import time
+import timeit
 
 
 def nature_cnn(scaled_images, act_fun=tf.nn.relu, **kwargs):
@@ -320,8 +314,6 @@ class ActorCriticPolicy(BasePolicy):
             elif isinstance(self.proba_distribution, MultiCategoricalProbabilityDistribution):
                 self._policy_proba = [tf.nn.softmax(categorical.flatparam())
                                      for categorical in self.proba_distribution.categoricals]
-            elif isinstance(self.proba_distribution, MixProbabilityDistribution):
-                self._policy_proba = [tf.nn.sigmoid(self.policy[:, 0]), self.proba_distribution.g_mean, self.proba_distribution.g_std]#self.proba_distribution.gaussian.mean, self.proba_distribution.gaussian.std]
             else:
                 self._policy_proba = []  # it will return nothing, as it is not implemented
             if self.dual_critic:
@@ -1047,12 +1039,16 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
 
             et_mask = np.array([m == "et" for m in self.obs_module_indices])
             lqr_mask = np.array([m == "lqr" for m in self.obs_module_indices])
-            et_obs = tf.boolean_mask(self.processed_obs, et_mask, name="et_obs", axis=2 if self.obs_2d else 1)
-            et_obs.set_shape([None, 5, sum(et_mask)])
             if self.obs_2d:
+                et_obs = tf.boolean_mask(self.processed_obs, et_mask, name="et_obs", axis=2)
+                et_obs.set_shape([None, 5, sum(et_mask)])
+
                 lqr_obs = tf.boolean_mask(self.processed_obs[:, 0, :], lqr_mask, name="lqr_obs", axis=1)
                 lqr_obs.set_shape([None, sum(lqr_mask)])
             else:
+                et_obs = tf.boolean_mask(self.processed_obs, et_mask, name="et_obs", axis=1)
+                et_obs.set_shape([None, sum(et_mask)])
+
                 lqr_obs = tf.boolean_mask(self.processed_obs, lqr_mask, name="lqr_obs", axis=1)
                 lqr_obs.set_shape([None, sum(lqr_mask)])
 
@@ -1144,9 +1140,9 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
             else:
                 K = K[int(min(obs[..., self.lqr_k_idx], len(K) - 1))].reshape(1, *self.lqr.K_num.shape[1:])
         if self.measure_execution_time:
-            start_time = time.process_time()
+            start_time = timeit.default_timer()#time.process_time()
             action = self.sess.run(self.deterministic_action if deterministic else self.action, {self.obs_ph: obs, self.lqr_K_ph: K})
-            self.last_execution_time = time.process_time() - start_time
+            self.last_execution_time = timeit.default_timer() - start_time#time.process_time() - start_time
             value, neglogp = self.sess.run([self.value_flat, self.neglogp], {self.obs_ph: obs, self.lqr_K_ph: K})
         else:
             action, value, neglogp = self.sess.run([self.deterministic_action if deterministic else self.action, self.value_flat, self.neglogp], {self.obs_ph: obs, self.lqr_K_ph: K})
@@ -1162,6 +1158,7 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
         action[:, 1][compute_mask] = self.last_horizon[compute_mask]
         self.last_horizon = action[:, 1]
         neglogp = self.sess.run(self.fh_neglogp, {self.fh_action_ph: action, self.obs_ph: obs, self.lqr_K_ph: K})
+
         return action, value, self.initial_state, neglogp
 
     def proba_step(self, obs, state=None, mask=None):
@@ -1169,8 +1166,6 @@ class AHETMPCLQRPolicy(ActorCriticPolicy):  # TODO: check entropy, KL (that they
 
     def value(self, obs, state=None, mask=None):
         return self.sess.run(self.value_flat, {self.obs_ph: obs})
-
-
 
 
 class RLMPCPolicy(ActorCriticPolicy):
@@ -1339,6 +1334,9 @@ class RLMPCPolicy(ActorCriticPolicy):
             else:
                 action, value, neglogp = self.sess.run([self.action, self.value_flat, self.neglogp], {self.obs_ph: obs, self.mpc_action_ph: np.zeros(shape=(obs.shape[0], *self.mpc_action_ph.shape[1:]))})
             """
+        if deterministic:
+            et_stochastic = self.sess.run(self.action, {self.obs_ph: obs, self.lqr_K_ph: K})
+            action[:, 0] = et_stochastic[:, 0]
         if self.last_horizon is None:
             self.last_horizon = action[:, 1]
         compute_mask = ~action[:, 0].astype(np.bool)
@@ -1429,131 +1427,89 @@ class RLMPCPolicy(ActorCriticPolicy):
         return map(concatenate_data, (self.horizon_obs, self.horizon_actions, self.horizon_returns, self.horizon_values, self.horizon_advs, self.horizon_neglogps))
 
 
-if tfp_import:
-    class AHMPCPolicy(FeedForwardPolicy):
-        def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, layers=None, net_arch=None,
-                     act_fun=tf.tanh, use_mpc_value_fn=False, mpc_state_dim=None, mpc_parameter_dim=None,
-                     train_mpc_value_fn=True, mpc_gamma=1, mpc_act_fun="tanh", use_mpc_vf_target=False, mpc_value_fn_path=None,
-                     mpc_vf_type="nn", mpc_n_steps=32, cnn_extractor=nature_cnn,
-                     feature_extraction="mlp", measure_execution_time=False, **kwargs):
-            self.dist_type = GeneralizedPoissonProbabilityDistributionType#PoissonProbabilityDistributionType,
-            super(AHMPCPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse, dist_type=self.dist_type,
-                                              layers=layers, net_arch=net_arch, act_fun=act_fun,
-                                            feature_extraction="mlp", **kwargs)
+class AHMPCPolicy(FeedForwardPolicy):
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, layers=None, net_arch=None,
+                 act_fun=tf.tanh, use_mpc_value_fn=False, mpc_state_dim=None, mpc_parameter_dim=None,
+                 train_mpc_value_fn=True, mpc_gamma=1, mpc_act_fun="tanh", use_mpc_vf_target=False, mpc_value_fn_path=None,
+                 mpc_vf_type="nn", mpc_n_steps=32, cnn_extractor=nature_cnn,
+                 feature_extraction="mlp", measure_execution_time=False, **kwargs):
+        self.dist_type = GeneralizedPoissonProbabilityDistributionType#PoissonProbabilityDistributionType,
+        super(AHMPCPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse, dist_type=self.dist_type,
+                                          layers=layers, net_arch=net_arch, act_fun=act_fun,
+                                        feature_extraction="mlp", **kwargs)
 
-            assert use_mpc_value_fn is False or (mpc_state_dim is not None and mpc_parameter_dim is not None)
-            assert mpc_vf_type in ["nn", "sos", "poly"]
-            assert mpc_act_fun in ["tanh", "relu"]
-            if layers is not None and "mpc" in layers:
-                net_arch = [{"vf": layers["mpc"]}]
-            elif net_arch is None:
-                net_arch = [{"vf": [128, 128]}]
-            elif "mpc" in net_arch[0]:
-                net_arch[0]["vf"] = net_arch[0]["mpc"]
+        assert use_mpc_value_fn is False or (mpc_state_dim is not None and mpc_parameter_dim is not None)
+        assert mpc_vf_type in ["nn", "sos", "poly"]
+        assert mpc_act_fun in ["tanh", "relu"]
+        if layers is not None and "mpc" in layers:
+            net_arch = [{"vf": layers["mpc"]}]
+        elif net_arch is None:
+            net_arch = [{"vf": [128, 128]}]
+        elif "mpc" in net_arch[0]:
+            net_arch[0]["vf"] = net_arch[0]["mpc"]
 
-            if train_mpc_value_fn:
-                from stable_baselines.common.buffers import ReplayBuffer
-                self.mpc_replay_buffer = ReplayBuffer(int(5e5), ["bootstrap"])
-                self.ep_data = [[] for _ in range(n_env)]
+        if train_mpc_value_fn:
+            from stable_baselines.common.buffers import ReplayBuffer
+            self.mpc_replay_buffer = ReplayBuffer(int(5e5), ["bootstrap"])
+            self.ep_data = [[] for _ in range(n_env)]
 
-            self.mpc_net_arch = net_arch
-            self.mpc_act_fun = getattr(tf.nn, mpc_act_fun)
-            self.mpc_n_steps = mpc_n_steps
+        self.mpc_net_arch = net_arch
+        self.mpc_act_fun = getattr(tf.nn, mpc_act_fun)
+        self.mpc_n_steps = mpc_n_steps
 
-            self.mpc_value_fn = None
-            self.use_mpc_vf_target = use_mpc_vf_target and use_mpc_value_fn
-            self.use_mpc_value_fn = use_mpc_value_fn
-            self.train_mpc_value_fn = use_mpc_value_fn and train_mpc_value_fn
-            self.mpc_vf_type = mpc_vf_type
-            self.mpc_gamma = mpc_gamma
-            self.mpc_value_fn_path = mpc_value_fn_path
-            if self.use_mpc_value_fn:
-                self.mpc_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim + mpc_parameter_dim),
-                                                   name="mpc_state_ph", dtype=tf.float32)
-                self.mpc_next_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim + mpc_parameter_dim),
-                                                        name="mpc_next_state_ph", dtype=tf.float32)
-                self.mpc_vf_w_b = None
+        self.mpc_value_fn = None
+        self.use_mpc_vf_target = use_mpc_vf_target and use_mpc_value_fn
+        self.use_mpc_value_fn = use_mpc_value_fn
+        self.train_mpc_value_fn = use_mpc_value_fn and train_mpc_value_fn
+        self.mpc_vf_type = mpc_vf_type
+        self.mpc_gamma = mpc_gamma
+        self.mpc_value_fn_path = mpc_value_fn_path
+        if self.use_mpc_value_fn:
+            self.mpc_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim + mpc_parameter_dim),
+                                               name="mpc_state_ph", dtype=tf.float32)
+            self.mpc_next_state_ph = tf.placeholder(shape=(n_batch, mpc_state_dim + mpc_parameter_dim),
+                                                    name="mpc_next_state_ph", dtype=tf.float32)
+            self.mpc_vf_w_b = None
 
-        def make_mpc_value_fn(self, state, reuse=False, scope="mpc_value_fns"):
-            state = tf.layers.flatten(state)
-            with tf.variable_scope("model/{}".format(scope), reuse=reuse):
-                if self.mpc_vf_type == "nn":
-                    _, mpc_value_fn = mlp_extractor(state, self.mpc_net_arch, self.mpc_act_fun, name="mpc")
-                elif self.mpc_vf_type == "sos":
-                    # if self.mpc_parameter_ph.shape[1] == 2:
-                    #    parameter = tf.subtract(parameter, state[:, 1:], name="goal_distance")
-                    mpc_value_fn = state
-                    mpc_value_fn = tf.square(mpc_value_fn)
-                elif self.mpc_vf_type == "poly":
-                    # if self.mpc_parameter_ph.shape[1] == 2:
-                    #    parameter = tf.subtract(parameter, state[:, 1:], name="goal_distance")
-                    mpc_value_fn = state
-                    mpc_value_fn = tf.concat([mpc_value_fn, tf.square(mpc_value_fn)], axis=-1)
-                else:
-                    raise NotImplementedError
-                mpc_value_fn = tf.layers.dense(mpc_value_fn, 1, name="mpc_value_fn")
-                if not reuse:
-                    self.mpc_value_fn = mpc_value_fn
-                    self.mpc_vf_w_b = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="train_model/model/{}".format(scope))
-
-            return mpc_value_fn
-
-        def get_mpc_vfn_weights_and_biases(self):
-            wbs = self.sess.run(self.mpc_vf_w_b)
-            w_inds = [i for i, v in enumerate(self.mpc_vf_w_b) if "kernel" in v.name or "/w:" in v.name]
-            b_inds = [i for i, v in enumerate(self.mpc_vf_w_b) if "bias" in v.name or "/b:" in v.name]
-            return [wbs[i] for i in w_inds], [wbs[i] for i in b_inds]
-
-        def add_mpc_data(self, state, action, reward, next_state, done, env_i=0, **extra_data):
-            self.ep_data[env_i].append([state, action, reward, next_state, done, *[extra_data[k] for k in sorted(extra_data)]])
-            if done:
-                for i in range(len(self.ep_data[env_i])):
-                    self.mpc_replay_buffer.add(*self.ep_data[env_i][i])
-                self.ep_data[env_i] = []
-
-        def mpc_data_sample(self, batch_size):
-            return self.mpc_replay_buffer.sample(batch_size, n_step=self.mpc_n_steps, gamma=self.mpc_gamma)
-
-        def step(self, obs, state=None, mask=None, deterministic=False):
-            if True or self.dist_type != GeneralizedPoissonProbabilityDistributionType:
-                return super().step(obs, state, mask, deterministic)
-            if self.measure_execution_time:
-                start_time = time.process_time()
-                action = self.sess.run(self.deterministic_action if deterministic else self.action, {self.obs_ph: obs})
-                self.last_execution_time = time.process_time() - start_time
-                value, neglogp = self.sess.run([self.value_flat, self.neglogp], {self.obs_ph: obs})
+    def make_mpc_value_fn(self, state, reuse=False, scope="mpc_value_fns"):
+        state = tf.layers.flatten(state)
+        with tf.variable_scope("model/{}".format(scope), reuse=reuse):
+            if self.mpc_vf_type == "nn":
+                _, mpc_value_fn = mlp_extractor(state, self.mpc_net_arch, self.mpc_act_fun, name="mpc")
+            elif self.mpc_vf_type == "sos":
+                # if self.mpc_parameter_ph.shape[1] == 2:
+                #    parameter = tf.subtract(parameter, state[:, 1:], name="goal_distance")
+                mpc_value_fn = state
+                mpc_value_fn = tf.square(mpc_value_fn)
+            elif self.mpc_vf_type == "poly":
+                # if self.mpc_parameter_ph.shape[1] == 2:
+                #    parameter = tf.subtract(parameter, state[:, 1:], name="goal_distance")
+                mpc_value_fn = state
+                mpc_value_fn = tf.concat([mpc_value_fn, tf.square(mpc_value_fn)], axis=-1)
             else:
-                if deterministic:
-                    action = self.sess.run(self.deterministic_action, {self.obs_ph: obs})
-                    value, neglogp = self.sess.run([self.value_flat, self.neglogp],
-                                                           {self.obs_ph: obs, self.proba_distribution.sample_ph: action})
-                else:
-                    samples_from_uniform = list(np.random.uniform(0.0, 1.0 - 1e-3, obs.shape[0]))
-                    rate, delta = self.sess.run([self.proba_distribution.rate, self.proba_distribution.delta],
-                                                {self.obs_ph: obs})
-                    pmf_c_1 = self.proba_distribution.pmf(0, rate, delta)
-                    c_p = [[pmf_c_1[i].item()] for i in range(obs.shape[0])]
-                    count = 1
-                    samples = []
-                    while len(samples_from_uniform) > 0:
-                        pmf_c_1 = self.proba_distribution.pmf(count, rate, delta, pmf_c_1)
-                        for i in range(obs.shape[0]):
-                            c_p[i].append(c_p[i][-1] + pmf_c_1[i].item())
-                        pop_is = []
-                        for i in range(len(c_p)):
-                            if i < len(samples_from_uniform):
-                                if c_p[i][count - 1] <= samples_from_uniform[i] <= c_p[i][count] or np.isnan(c_p[i][-1]) or (c_p[i][-1] >= 0.95 and pmf_c_1[i].item() < 1e-5):  # TODO: is gonna be wrong if there are multiple actions per obs
-                                    samples.append(count)
-                                    pop_is.append(i)
+                raise NotImplementedError
+            mpc_value_fn = tf.layers.dense(mpc_value_fn, 1, name="mpc_value_fn")
+            if not reuse:
+                self.mpc_value_fn = mpc_value_fn
+                self.mpc_vf_w_b = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="train_model/model/{}".format(scope))
 
-                        if len(pop_is) > 0:
-                            for i in reversed(pop_is):
-                                samples_from_uniform.pop(i)
-                        count += 1
-                    action = np.array(samples).reshape(obs.shape[0], -1)
-                    value, neglogp = self.sess.run([self.value_flat, self.neglogp],
-                                                        {self.obs_ph: obs, self.proba_distribution.sample_ph: action})
-            return action, value, self.initial_state, neglogp
+        return mpc_value_fn
+
+    def get_mpc_vfn_weights_and_biases(self):
+        wbs = self.sess.run(self.mpc_vf_w_b)
+        w_inds = [i for i, v in enumerate(self.mpc_vf_w_b) if "kernel" in v.name or "/w:" in v.name]
+        b_inds = [i for i, v in enumerate(self.mpc_vf_w_b) if "bias" in v.name or "/b:" in v.name]
+        return [wbs[i] for i in w_inds], [wbs[i] for i in b_inds]
+
+    def add_mpc_data(self, state, action, reward, next_state, done, env_i=0, **extra_data):
+        self.ep_data[env_i].append([state, action, reward, next_state, done, *[extra_data[k] for k in sorted(extra_data)]])
+        if done:
+            for i in range(len(self.ep_data[env_i])):
+                self.mpc_replay_buffer.add(*self.ep_data[env_i][i])
+            self.ep_data[env_i] = []
+
+    def mpc_data_sample(self, batch_size):
+        return self.mpc_replay_buffer.sample(batch_size, n_step=self.mpc_n_steps, gamma=self.mpc_gamma)
 
 
 
