@@ -12,6 +12,8 @@ from stable_baselines.common.schedules import get_schedule_fn
 from stable_baselines.common.tf_util import total_episode_reward_logger
 from stable_baselines.common.math_util import safe_mean
 
+from collections import deque # DO: additional import otherwise NameError: name 'deque' is not defined
+
 class PPO2(ActorCriticRLModel):
     """
     Proximal Policy Optimization algorithm (GPU version).
